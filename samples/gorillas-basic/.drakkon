@@ -1,0 +1,12 @@
+{
+  "platforms": [
+
+  ],
+  "version": "5.22",
+  "image_index": true,
+  "manifest": true,
+  "bundle_compile": true,
+  "font_index": true,
+  "gems": {
+  }
+}
