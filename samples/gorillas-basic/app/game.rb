@@ -2,7 +2,7 @@ class Game
   include Drecs
   attr_gtk
 
-  FANCY_WHITE = [253, 252, 253]
+  FANCY_WHITE = { r: 253, g: 252, b: 253 }
 
   BUILDING_HEIGHTS = [4, 4, 6, 8, 15, 18, 20]
   BUILDING_ROOM_SIZES = [4, 5, 6, 7]
@@ -10,7 +10,6 @@ class Game
   BUILDING_ROOM_SPACING = 15
   BUILDING_ROOM_HEIGHT = 15
   BUILDING_SPACING = 1
-  FANCY_WHITE = [253, 252, 253]
 
   component :acceleration, { x: 0, y: 0 }
   component :animated, { enabled: false, idle_sprite: nil, index: 0, frame_tick_count: 0, frames: [] }
@@ -33,14 +32,14 @@ class Game
   component :speed, { speed: 1 }
   component :sprite, { path: nil, angle: 0 }
   component :static_rendered, { rendered: false }
-  component :turn, { angle: "", angle_committed: false, first: nil, player: nil, velocity: "", velocity_committed: false }
+  component :turn, { angle: "", angle_committed: false, first_player: nil, player: nil, velocity: "", velocity_committed: false }
   component :debug
 
   entity :background, :background_color
   entity :banana, :acceleration, :collides, :owned, :position, :rendered, :rotation, size: { width: 15, height: 15 }, sprite: { path: "sprites/banana.png" }
   entity :building, :ephemeral, :explodes, :position, :size, :solid, :solids, :static_rendered
   entity :current_turn, :turn
-  entity :game_over_screen, :ephemeral, :rendered, :solids, labels: { labels: [[640, 370, "Game Over!!", 5, 1, FANCY_WHITE]] }
+  entity :game_over_screen, :ephemeral, :rendered, :solids, labels: { labels: [[640, 370, "Game Over!!", 5, 1, FANCY_WHITE.values]] }
   entity :gorilla, :animated, :explodes, :killable, :position, :score, :solid, size: { width: 50, height: 50 }
   entity :gravity, speed: { speed: 0.25 }
   entity :hole, :empty, :ephemeral, :position, :rendered,
@@ -58,10 +57,10 @@ class Game
              [3, "sprites/explosion6.png"],
            ],
          }
-  entity :scoreboard, :debug, :rendered, :solid, position: { x: 0, y: 0 }, size: { width: 1200, height: 31 }, solids: { solids: [[0, 0, 1280, 31, FANCY_WHITE],
+  entity :scoreboard, :debug, :rendered, :solid, position: { x: 0, y: 0 }, size: { width: 1200, height: 31 }, solids: { solids: [[0, 0, 1280, 31, FANCY_WHITE.values],
                                                                                                                                 [1, 1, 1279, 29]] }
   entity :wind, :rendered, :solids, :speed, lines: {
-                                              lines: [640, 30, 640, 0, FANCY_WHITE],
+                                              lines: [640, 30, 640, 0, FANCY_WHITE.values],
                                             }
 
   system :accelerate, :acceleration, :position do |entities|
@@ -83,19 +82,18 @@ class Game
 
     state.systems << :handle_input_game_over
 
-    label_text = winner.id == world.player_one.id ? "Player 1 Wins!!" : "Player 2 Wins!!"
-    game_over_screen = new_entity(
+    label_text = winner.id == state.player_one.id ? "Player 1 Wins!!" : "Player 2 Wins!!"
+    game_over_screen = create_entity(
       :game_over_screen,
       solids: {
         solids: [grid.rect, 0, 0, 0, 200],
       },
     )
-    game_over_screen.labels.labels << [640, 340, label_text, 5, 1, FANCY_WHITE]
-    state.entities << game_over_screen
+    game_over_screen.labels.labels << [640, 340, label_text, 5, 1, FANCY_WHITE.values]
   end
 
   system :check_win, :destroyed do |entities|
-    entities.each(&state.entities.method(:delete))
+    entities.each(&method(:delete_entity))
   end
 
   system :generate_stage do
@@ -106,15 +104,14 @@ class Game
       b << generate_building(BUILDING_SPACING + b.last.position.x + b.last.size.width, *random_building_size)
     end
 
-    state.entities << buildings
-
     generate_player(state.player_one, buildings[1], :left)
     generate_player(state.player_two, buildings[-3], :right)
 
     wind_speed = 1.randomize(:ratio, :sign)
     state.wind.speed.speed = 1.randomize(:ratio, :sign)
-    state.current_turn.turn.first ||= state.player_one
-    state.current_turn.turn.player = state.current_turn.turn.first
+
+    state.current_turn.turn.first_player ||= state.player_one
+    state.current_turn.turn.player = state.current_turn.turn.first_player
 
     state.systems.delete(:generate_stage)
   end
@@ -129,7 +126,7 @@ class Game
     entities.each do |entity|
       rect = make_rect(entity)
 
-      collision = collidables.find { |collidable| make_rect(collidable).intersect_rect(rect) }
+      collision = collidables.find { |collidable| make_rect(collidable).intersect_rect?(rect) }
 
       next unless collision
 
@@ -137,7 +134,7 @@ class Game
 
       next if in_hole
 
-      state.entities << new_entity(:hole, position: { x: collision.position.x - 20, y: collision.position.y - 20 })
+      create_entity(:hole, position: { x: collision.position.x - 20, y: collision.position.y - 20 })
       add_component(collision, :destroyed)
       add_component(entity, :exploded)
     end
@@ -163,7 +160,7 @@ class Game
   system :handle_input_game_over, :ephemeral do |entities|
     next unless inputs.keyboard.key_down.truthy_keys.any?
 
-    entities.each(&state.entities.method(:delete))
+    entities.each(&method(:delete_entity))
 
     state.entities.each do |e|
       remove_component(e, :exploded)
@@ -176,7 +173,7 @@ class Game
     state.current_turn.turn.velocity = ""
     state.current_turn.turn.angle_committed = false
     state.current_turn.turn.velocity_committed = false
-    state.current_turn.turn.first = next_player(state.current_turn.turn.first)
+    state.current_turn.turn.first_player = next_player(state.current_turn.turn.first_player)
 
     state.systems << :generate_stage
     state.systems << :handle_input
@@ -186,7 +183,7 @@ class Game
 
   system :handle_miss, :collides, :position do |entities|
     entities.each do |entity|
-      state.entities.delete(entity) if entity.position.y < 0
+      delete_entity(entity) if entity.position.y < 0
     end
   end
 
@@ -262,12 +259,12 @@ class Game
   end
 
   system :render_scores do
-    args.outputs.labels << [10, 25, "Score: #{state.player_one.score.score}", 0, 0, FANCY_WHITE]
-    args.outputs.labels << [1270, 25, "Score: #{state.player_two.score.score}", 0, 2, FANCY_WHITE]
+    args.outputs.labels << [10, 25, "Score: #{state.player_one.score.score}", 0, 0, FANCY_WHITE.values]
+    args.outputs.labels << [1270, 25, "Score: #{state.player_two.score.score}", 0, 2, FANCY_WHITE.values]
   end
 
   system :render_solids, :solids, :rendered do |entities|
-    entities.each do
+    entities.each do |entity|
       args.outputs.primitives << entity.solids.solids.map(&:solid)
     end
   end
@@ -289,7 +286,7 @@ class Game
 
   system :render_static_solids, :solids, :static_rendered do |entities|
     entities.each do |entity|
-      entity.static_rendered.rendered = true
+      remove_component(entity, :static_rendered)
       outputs.static_solids << entity.solids.solids
     end
   end
@@ -325,7 +322,7 @@ class Game
   end
 
   def next_player(player)
-    remaining = [world.player_one, world.player_two] - [player]
+    remaining = [state.player_one, state.player_two] - [player]
     remaining.first
   end
 
@@ -338,15 +335,15 @@ class Game
 
     if turn.velocity_committed && turn.angle_committed
       angle = turn.angle.to_i
-      angle = 180 - angle if world.player_two.id == turn.player.id
+      angle = 180 - angle if state.player_two.id == turn.player.id
       velocity = turn.velocity.to_i / 5
 
       turn.player.animated.enabled = true
-      state.entities << new_entity(:banana,
-                                   owned: { owner: turn.player },
-                                   position: { x: turn.player.position.x + 25, y: turn.player.position.y + 60 },
-                                   angled: { angle: angle },
-                                   acceleration: { x: angle.vector_x(velocity), y: angle.vector_y(velocity) })
+      create_entity(:banana,
+                    owned: { owner: turn.player },
+                    position: { x: turn.player.position.x + 25, y: turn.player.position.y + 60 },
+                    angled: { angle: angle },
+                    acceleration: { x: angle.vector_x(velocity), y: angle.vector_y(velocity) })
     end
   end
 
@@ -383,16 +380,16 @@ class Game
     width = BUILDING_ROOM_WIDTH * rooms + BUILDING_ROOM_SPACING * (rooms + 1)
     height = BUILDING_ROOM_HEIGHT * floors + BUILDING_ROOM_SPACING * (floors + 1)
 
-    building = new_entity(:building,
-                          position: { x: x, y: 0 },
-                          size: { width: width, height: height },
-                          solids: {
-                            solids: [
-                              [x - 1, 0, width + 2, height + 1, FANCY_WHITE],
-                              [x, 0, width, height, random_building_color],
-                              windows_for_building(x, floors, rooms),
-                            ],
-                          })
+    building = create_entity(:building,
+                             position: { x: x, y: 0 },
+                             size: { width: width, height: height },
+                             solids: {
+                               solids: [
+                                 [x - 1, 0, width + 2, height + 1, FANCY_WHITE.values],
+                                 [x, 0, width, height, random_building_color],
+                                 windows_for_building(x, floors, rooms),
+                               ],
+                             })
   end
 
   def generate_player(player, building, id)
@@ -435,11 +432,57 @@ class Game
   end
 
   def defaults
-    args.state.systems ||= []
+    return unless state.tick_count == 0
+
+    create_entity(:background)
+    create_entity(:current_turn, as: :current_turn)
+
+    create_entity(:gorilla, as: :player_one, animated: {
+                              idle_sprite: "sprites/left-idle.png",
+                              frames: [
+                                [5, "sprites/left-0.png"],
+                                [5, "sprites/left-1.png"],
+                                [5, "sprites/left-2.png"],
+                              ],
+                            })
+    create_entity(:gorilla, as: :player_two, animated: {
+                              idle_sprite: "sprites/right-idle.png",
+                              frames: [
+                                [5, "sprites/right-0.png"],
+                                [5, "sprites/right-1.png"],
+                                [5, "sprites/right-2.png"],
+                              ],
+                            })
+    create_entity :gravity, as: :gravity
+    create_entity :scoreboard
+    create_entity :wind, as: :wind
+
+    add_system :render_background
+    add_system :generate_stage
+    add_system :render_scores
+    add_system :render_static_solids
+    add_system :update_wind
+    add_system :handle_rotation
+    add_system :render_lines
+    add_system :render_solids
+    add_system :render_labels
+    add_system :accelerate
+    add_system :update_acceleration
+    add_system :handle_explosion
+    add_system :handle_miss
+    add_system :cleanup_destroyed
+    add_system :render_sprites
+    add_system :render_animations
+    add_system :handle_input
+    add_system :render_turn_input
+    add_system :check_win
+    add_system :handle_next_turn
   end
 
   def tick
     defaults
     process_systems(args)
+
+    outputs.primitives << $gtk.framerate_diagnostics_primitives
   end
 end

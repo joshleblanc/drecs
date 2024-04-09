@@ -2,14 +2,14 @@
   "platforms": [
 
   ],
-  "version": "5.22",
+  "version": "5.23",
   "image_index": false,
   "manifest": true,
   "bundle_compile": true,
   "font_index": true,
   "gems": {
   },
-  "manifest_digest": "6b451b3bc514c4cccd16aab0c51ca5be",
+  "manifest_digest": "b36e08e11d1fc2fff1853746a36f2dd8",
   "font_digest": "d41d8cd98f00b204e9800998ecf8427e",
   "bundle_digest": "99914b932bd37a50b983c5e7c90ae93b"
 }
