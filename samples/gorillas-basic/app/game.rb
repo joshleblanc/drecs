@@ -42,26 +42,9 @@ class Game
   entity :game_over_screen, :ephemeral, :rendered, :solids, labels: { labels: [[640, 370, "Game Over!!", 5, 1, FANCY_WHITE.values]] }
   entity :gorilla, :animated, :explodes, :killable, :position, :score, :solid, size: { width: 50, height: 50 }
   entity :gravity, speed: { speed: 0.25 }
-  entity :hole, :empty, :ephemeral, :position, :rendered,
-         size: { width: 40, height: 40 },
-         sprite: { width: 40, height: 40 },
-         animated: {
-           enabled: true,
-           frames: [
-             [3, "sprites/explosion0.png"],
-             [3, "sprites/explosion1.png"],
-             [3, "sprites/explosion2.png"],
-             [3, "sprites/explosion3.png"],
-             [3, "sprites/explosion4.png"],
-             [3, "sprites/explosion5.png"],
-             [3, "sprites/explosion6.png"],
-           ],
-         }
-  entity :scoreboard, :debug, :rendered, :solid, position: { x: 0, y: 0 }, size: { width: 1200, height: 31 }, solids: { solids: [[0, 0, 1280, 31, FANCY_WHITE.values],
-                                                                                                                                [1, 1, 1279, 29]] }
-  entity :wind, :rendered, :solids, :speed, lines: {
-                                              lines: [640, 30, 640, 0, FANCY_WHITE.values],
-                                            }
+  entity :hole, :empty, :ephemeral, :position, :rendered, size: { width: 40, height: 40 }, sprite: { width: 40, height: 40 }, animated: { enabled: true, frames: [[3, "sprites/explosion0.png"], [3, "sprites/explosion1.png"], [3, "sprites/explosion2.png"], [3, "sprites/explosion3.png"], [3, "sprites/explosion4.png"], [3, "sprites/explosion5.png"], [3, "sprites/explosion6.png"]] }
+  entity :scoreboard, :debug, :rendered, :solid, position: { x: 0, y: 0 }, size: { width: 1200, height: 31 }, solids: { solids: [[0, 0, 1280, 31, FANCY_WHITE.values], [1, 1, 1279, 29]] }
+  entity :wind, :rendered, :solids, :speed, lines: { lines: [640, 30, 640, 0, FANCY_WHITE.values] }
 
   system :accelerate, :acceleration, :position do |entities|
     entities.each do |e|
@@ -83,12 +66,7 @@ class Game
     state.systems << :handle_input_game_over
 
     label_text = winner.id == state.player_one.id ? "Player 1 Wins!!" : "Player 2 Wins!!"
-    game_over_screen = create_entity(
-      :game_over_screen,
-      solids: {
-        solids: [grid.rect, 0, 0, 0, 200],
-      },
-    )
+    game_over_screen = create_entity(:game_over_screen, solids: { solids: [grid.rect, 0, 0, 0, 200] })
     game_over_screen.labels.labels << [640, 340, label_text, 5, 1, FANCY_WHITE.values]
   end
 
@@ -130,7 +108,7 @@ class Game
 
       next unless collision
 
-      in_hole = holes.map { |h| make_rect(h) }.any? { |h| h.scale_rect(0.8, 0.5, 0.5).intersect_rect?(make_rect(collision)) }
+      in_hole = holes.map { |h| make_rect(h).scale_rect(0.8, 0.5, 0.5) }.any? { |h| h.intersect_rect?(make_rect(collision)) }
 
       next if in_hole
 
@@ -339,11 +317,7 @@ class Game
       velocity = turn.velocity.to_i / 5
 
       turn.player.animated.enabled = true
-      create_entity(:banana,
-                    owned: { owner: turn.player },
-                    position: { x: turn.player.position.x + 25, y: turn.player.position.y + 60 },
-                    angled: { angle: angle },
-                    acceleration: { x: angle.vector_x(velocity), y: angle.vector_y(velocity) })
+      create_entity(:banana, owned: { owner: turn.player }, position: { x: turn.player.position.x + 25, y: turn.player.position.y + 60 }, angled: { angle: angle }, acceleration: { x: angle.vector_x(velocity), y: angle.vector_y(velocity) })
     end
   end
 
@@ -380,16 +354,7 @@ class Game
     width = BUILDING_ROOM_WIDTH * rooms + BUILDING_ROOM_SPACING * (rooms + 1)
     height = BUILDING_ROOM_HEIGHT * floors + BUILDING_ROOM_SPACING * (floors + 1)
 
-    building = create_entity(:building,
-                             position: { x: x, y: 0 },
-                             size: { width: width, height: height },
-                             solids: {
-                               solids: [
-                                 [x - 1, 0, width + 2, height + 1, FANCY_WHITE.values],
-                                 [x, 0, width, height, random_building_color],
-                                 windows_for_building(x, floors, rooms),
-                               ],
-                             })
+    create_entity(:building, position: { x: x, y: 0 }, size: { width: width, height: height }, solids: { solids: [[x - 1, 0, width + 2, height + 1, FANCY_WHITE.values], [x, 0, width, height, random_building_color], windows_for_building(x, floors, rooms)] })
   end
 
   def generate_player(player, building, id)
@@ -436,23 +401,8 @@ class Game
 
     create_entity(:background)
     create_entity(:current_turn, as: :current_turn)
-
-    create_entity(:gorilla, as: :player_one, animated: {
-                              idle_sprite: "sprites/left-idle.png",
-                              frames: [
-                                [5, "sprites/left-0.png"],
-                                [5, "sprites/left-1.png"],
-                                [5, "sprites/left-2.png"],
-                              ],
-                            })
-    create_entity(:gorilla, as: :player_two, animated: {
-                              idle_sprite: "sprites/right-idle.png",
-                              frames: [
-                                [5, "sprites/right-0.png"],
-                                [5, "sprites/right-1.png"],
-                                [5, "sprites/right-2.png"],
-                              ],
-                            })
+    create_entity(:gorilla, as: :player_one, animated: { idle_sprite: "sprites/left-idle.png", frames: [[5, "sprites/left-0.png"], [5, "sprites/left-1.png"], [5, "sprites/left-2.png"]] })
+    create_entity(:gorilla, as: :player_two, animated: { idle_sprite: "sprites/right-idle.png", frames: [[5, "sprites/right-0.png"], [5, "sprites/right-1.png"], [5, "sprites/right-2.png"]] })
     create_entity :gravity, as: :gravity
     create_entity :scoreboard
     create_entity :wind, as: :wind
@@ -482,7 +432,5 @@ class Game
   def tick
     defaults
     process_systems(args)
-
-    outputs.primitives << $gtk.framerate_diagnostics_primitives
   end
 end
