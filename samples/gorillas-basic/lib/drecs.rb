@@ -8,6 +8,7 @@ module Drecs
   SYSTEMS = {}
   ENTITIES = {}
   COMPONENTS = {}
+  WORLDS = {}
 
   def self.included(base)
     base.extend(ClassMethods)
@@ -22,7 +23,9 @@ module Drecs
     end
 
     def component(name, **defaults, &blk)
-      Drecs::COMPONENTS[name] = {}
+      Drecs::COMPONENTS[name] = {}.tap do |klass|
+        klass.class_eval(&blk) if blk
+      end
       Drecs::COMPONENTS[name].merge! defaults
     end
 
@@ -30,6 +33,12 @@ module Drecs
       Drecs::ENTITIES[name] = {}
       components.each { |c| Drecs::ENTITIES[name][c] = {} }
       overrides.each { |k, v| Drecs::ENTITIES[name][k] = v }
+    end
+
+    def world(name, systems: [], entities: [])
+      Drecs::WORLDS[name] = {}
+      Drecs::WORLDS[name].systems = systems
+      Drecs::WORLDS[name].entities = entities
     end
   end
 
@@ -88,11 +97,27 @@ module Drecs
     $args.state.systems.delete(system)
   end
 
-  def process_systems(args)
-    args.state.systems ||= []
-    args.state.entities ||= []
+  def set_world(name)
+    world = Drecs::WORLDS[name]
 
-    args.state.systems.each do |system|
+    world.entities.each do |entity|
+      if entity.is_a? Hash 
+        create_entity
+      else 
+        create_entity(entity)
+      end
+      
+    end
+    $args.state.world = 
+  end
+
+  def process_systems(args)
+    return unless args.state.world
+
+    args.state.world.systems ||= []
+    args.state.world.entities ||= []
+
+    args.state.world.systems.each do |system|
       s = Drecs::SYSTEMS[system]
       s = Drecs::SYSTEMS["#{system}_system".to_sym] unless s
 
@@ -102,7 +127,14 @@ module Drecs
         has_components?(e, *s.components)
       end
 
-      instance_exec(system_entities, args, &s.block)
+      args.tap do |klass|
+        klass.instance_exec(system_entities, &s.block)
+      end
     end
+  end
+
+  module Main
+    include Drecs
+    include Drecs::ClassMethods
   end
 end

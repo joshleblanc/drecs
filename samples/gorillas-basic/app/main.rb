@@ -1,8 +1,18 @@
-require_relative "lib/drecs"
-require_relative "game"
+require "lib/drecs"
+
+include Drecs::Main
+
+FANCY_WHITE = { r: 253, g: 252, b: 253 }
+
+require_relative "entities"
+require_relative "components"
+require_relative "systems"
+
+def defaults(args)
+  return unless args.state.tick_count == 0
+end
 
 def tick(args)
-  args.state.game ||= Game.new
-  args.state.game.args = args
-  args.state.game.tick
+  defaults(args)
+  process_systems(args)
 end
