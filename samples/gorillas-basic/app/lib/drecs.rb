@@ -89,6 +89,9 @@ module Drecs
   end
 
   def process_systems(args)
+    args.state.systems ||= []
+    args.state.entities ||= []
+
     args.state.systems.each do |system|
       s = Drecs::SYSTEMS[system]
       s = Drecs::SYSTEMS["#{system}_system".to_sym] unless s
