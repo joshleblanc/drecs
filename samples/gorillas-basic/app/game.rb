@@ -42,7 +42,7 @@ class Game
   entity :game_over_screen, :ephemeral, :rendered, :solids, labels: { labels: [[640, 370, "Game Over!!", 5, 1, FANCY_WHITE.values]] }
   entity :gorilla, :animated, :explodes, :killable, :position, :score, :solid, size: { width: 50, height: 50 }
   entity :gravity, speed: { speed: 0.25 }
-  entity :hole, :empty, :ephemeral, :position, :rendered, size: { width: 40, height: 40 }, sprite: { width: 40, height: 40 }, animated: { enabled: true, frames: [[3, "sprites/explosion0.png"], [3, "sprites/explosion1.png"], [3, "sprites/explosion2.png"], [3, "sprites/explosion3.png"], [3, "sprites/explosion4.png"], [3, "sprites/explosion5.png"], [3, "sprites/explosion6.png"]] }
+  entity :hole, :empty, :ephemeral, :position, :rendered, size: { width: 40, height: 40 }, sprite: { path: "sprites/hole.png" }, animated: { enabled: true, frames: [[3, "sprites/explosion0.png"], [3, "sprites/explosion1.png"], [3, "sprites/explosion2.png"], [3, "sprites/explosion3.png"], [3, "sprites/explosion4.png"], [3, "sprites/explosion5.png"], [3, "sprites/explosion6.png"]] }
   entity :scoreboard, :debug, :rendered, :solid, position: { x: 0, y: 0 }, size: { width: 1200, height: 31 }, solids: { solids: [[0, 0, 1280, 31, FANCY_WHITE.values], [1, 1, 1279, 29]] }
   entity :wind, :rendered, :solids, :speed, lines: { lines: [640, 30, 640, 0, FANCY_WHITE.values] }
 
