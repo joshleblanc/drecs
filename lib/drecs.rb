@@ -98,6 +98,7 @@ module Drecs
   def set_world(name)
     $args.state.entities = []
     $args.state.systems = []
+    $args.state.active_world = name
 
     world = Drecs::WORLDS[name]
 
@@ -125,8 +126,12 @@ module Drecs
 
       next unless s
 
-      system_entities = args.state.entities.select do |e|
-        has_components?(e, *s.components)
+      system_entities = if s.components.empty?
+        args.state.entities
+      else
+          args.state.entities.select do |e|
+            has_components?(e, *s.components)
+          end
       end
 
       args.tap do |klass|
