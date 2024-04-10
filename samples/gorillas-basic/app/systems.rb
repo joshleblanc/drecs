@@ -18,18 +18,19 @@ system :check_win, :killable, :exploded do |entities|
   winner = winner(entities)
 
   winner.score.score += 1
-  state.systems.delete(:handle_input)
-  state.systems.delete(:render_turn_input)
-  state.systems.delete(:check_win)
+
+  remove_system(:handle_input)
+  remove_system(:render_turn_input)
+  remove_system(:check_win)
 
   state.systems << :handle_input_game_over
 
-  label_text = winner.id == state.player_one.id ? "Player 1 Wins!!" : "Player 2 Wins!!"
-  game_over_screen = create_entity(:game_over_screen, solids: { solids: [grid.rect, 0, 0, 0, 200] })
+  label_text = winner.entity_id == state.player_one.entity_id ? "Player 1 Wins!!" : "Player 2 Wins!!"
+  game_over_screen = create_entity(:game_over_screen, solids: { solids: [[grid.rect, 0, 0, 0, 200]] })
   game_over_screen.labels.labels << [640, 340, label_text, 5, 1, FANCY_WHITE.values]
 end
 
-system :check_win, :destroyed do |entities|
+system :cleanup_destroyed, :destroyed do |entities|
   entities.each(&method(:delete_entity))
 end
 
@@ -74,6 +75,7 @@ system :handle_explosion, :explodes, :position, :size do |entities|
     create_entity(:hole, position: { x: collision.position.x - 20, y: collision.position.y - 20 })
     add_component(collision, :destroyed)
     add_component(entity, :exploded)
+
   end
 end
 
@@ -103,7 +105,7 @@ system :handle_input_game_over, :ephemeral do |entities|
     remove_component(e, :exploded)
   end
 
-  outputs.static_colids.clear
+  outputs.static_solids.clear
   state.systems.delete :handle_input_game_over
 
   state.current_turn.turn.angle = ""
@@ -112,10 +114,12 @@ system :handle_input_game_over, :ephemeral do |entities|
   state.current_turn.turn.velocity_committed = false
   state.current_turn.turn.first_player = next_player(state.current_turn.turn.first_player)
 
-  state.systems << :generate_stage
-  state.systems << :handle_input
-  state.systems << :render_turn_input
-  state.systems << :check_win
+  s = state.entities.find { |e| e.entity_type == :game_over_screen }
+  delete_entity(s)
+  add_system :generate_stage
+  add_system :handle_input
+  add_system :render_turn_input
+  add_system :check_win 
 end
 
 system :handle_miss, :collides, :position do |entities|

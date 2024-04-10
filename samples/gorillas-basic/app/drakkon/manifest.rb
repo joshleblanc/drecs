@@ -1,3 +1,7 @@
-["app/drakkon/font_index.rb", "app/drakkon/bundle.rb", "app/systems.rb", "app/main.rb", "app/entities.rb", "app/components.rb"].each do |file|
-  require file
-end
+require 'app/drakkon/font_index.rb'
+require 'app/drakkon/bundle.rb'
+require 'app/worlds.rb'
+require 'app/systems.rb'
+require 'app/main.rb'
+require 'app/entities.rb'
+require 'app/components.rb'

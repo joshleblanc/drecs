@@ -22,10 +22,8 @@ module Drecs
       }
     end
 
-    def component(name, **defaults, &blk)
-      Drecs::COMPONENTS[name] = {}.tap do |klass|
-        klass.class_eval(&blk) if blk
-      end
+    def component(name, **defaults)
+      Drecs::COMPONENTS[name] = {}
       Drecs::COMPONENTS[name].merge! defaults
     end
 
@@ -62,13 +60,13 @@ module Drecs
 
   def create_entity(name, **overrides)
     unless Drecs::ENTITIES[name]
-      puts "No entity named #{name}"
       return nil
     end
 
     $args.state.entities ||= []
 
     state_alias = overrides.delete(:as)
+
     entity = $args.state.new_entity(name) do |e|
       e.alias = state_alias
       e.components = []
@@ -98,26 +96,30 @@ module Drecs
   end
 
   def set_world(name)
+    $args.state.entities = []
+    $args.state.systems = []
+
     world = Drecs::WORLDS[name]
 
     world.entities.each do |entity|
       if entity.is_a? Hash 
-        create_entity
+        entity.each(&method(:create_entity))
       else 
         create_entity(entity)
       end
-      
     end
-    $args.state.world = 
+
+    world.systems.each(&method(:add_system))
   end
 
   def process_systems(args)
-    return unless args.state.world
+    return unless args.state
 
-    args.state.world.systems ||= []
-    args.state.world.entities ||= []
+    args.state.systems ||= []
+    args.state.entities ||= []
 
-    args.state.world.systems.each do |system|
+    systems = args.state.systems.dup
+    systems.each do |system|
       s = Drecs::SYSTEMS[system]
       s = Drecs::SYSTEMS["#{system}_system".to_sym] unless s
 
