@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "drecs/version"
-
 module Drecs
+  VERSION = "0.1.0"
+
   class Error < StandardError; end
 
   SYSTEMS = {}
