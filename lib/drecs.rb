@@ -129,9 +129,9 @@ module Drecs
       system_entities = if s.components.empty?
         args.state.entities
       else
-          args.state.entities.select do |e|
-            has_components?(e, *s.components)
-          end
+        args.state.entities.select do |e|
+          has_components?(e, *s.components)
+        end
       end
 
       args.tap do |klass|
