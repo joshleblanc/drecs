@@ -18,7 +18,7 @@ module Drecs
     def system(name, *filter, &blk)
       Drecs::SYSTEMS[name] = {
         components: filter,
-        block: blk,
+        block: blk
       }
     end
 
@@ -102,9 +102,9 @@ module Drecs
     world = Drecs::WORLDS[name]
 
     world.entities.each do |entity|
-      if entity.is_a? Hash 
+      if entity.is_a? Hash
         entity.each(&method(:create_entity))
-      else 
+      else
         create_entity(entity)
       end
     end
@@ -121,7 +121,7 @@ module Drecs
     systems = args.state.systems.dup
     systems.each do |system|
       s = Drecs::SYSTEMS[system]
-      s = Drecs::SYSTEMS["#{system}_system".to_sym] unless s
+      s ||= Drecs::SYSTEMS[:"#{system}_system"]
 
       next unless s
 

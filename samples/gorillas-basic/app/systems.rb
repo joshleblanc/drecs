@@ -25,8 +25,8 @@ system :check_win, :killable, :exploded do |entities|
 
   state.systems << :handle_input_game_over
 
-  label_text = winner.entity_id == state.player_one.entity_id ? "Player 1 Wins!!" : "Player 2 Wins!!"
-  game_over_screen = create_entity(:game_over_screen, solids: { solids: [[grid.rect, 0, 0, 0, 200]] })
+  label_text = (winner.entity_id == state.player_one.entity_id) ? "Player 1 Wins!!" : "Player 2 Wins!!"
+  game_over_screen = create_entity(:game_over_screen, solids: {solids: [[grid.rect, 0, 0, 0, 200]]})
   game_over_screen.labels.labels << [640, 340, label_text, 5, 1, FANCY_WHITE.values]
 end
 
@@ -45,7 +45,6 @@ system :generate_stage do
   generate_player(state.player_one, buildings[1], :left)
   generate_player(state.player_two, buildings[-3], :right)
 
-  wind_speed = 1.randomize(:ratio, :sign)
   state.wind.speed.speed = 1.randomize(:ratio, :sign)
 
   state.current_turn.turn.first_player ||= state.player_one
@@ -72,10 +71,9 @@ system :handle_explosion, :explodes, :position, :size do |entities|
 
     next if in_hole
 
-    create_entity(:hole, position: { x: collision.position.x - 20, y: collision.position.y - 20 })
+    create_entity(:hole, position: {x: collision.position.x - 20, y: collision.position.y - 20})
     add_component(collision, :destroyed)
     add_component(entity, :exploded)
-
   end
 end
 
@@ -119,7 +117,7 @@ system :handle_input_game_over, :ephemeral do |entities|
   add_system :generate_stage
   add_system :handle_input
   add_system :render_turn_input
-  add_system :check_win 
+  add_system :check_win
 end
 
 system :handle_miss, :collides, :position do |entities|
@@ -176,7 +174,7 @@ system :render_animations, :animated, :position, :size do |entities|
       y: entity.position.y,
       w: entity.size.width,
       h: entity.size.height,
-      path: sprite,
+      path: sprite
     }
   end
 end
@@ -218,7 +216,7 @@ system :render_sprites, :position, :rendered, :size, :sprite do |entities|
       w: entity.size.width,
       h: entity.size.height,
       angle: entity.sprite.angle,
-      path: entity.sprite.path,
+      path: entity.sprite.path
     }
   end
 
@@ -237,12 +235,12 @@ system :render_turn_input do
   next unless turn.player
   next if turn.angle_comitted && turn.velocity.committed
 
-  x = turn.player.id == state.player_one.id ? 10 : 1120
+  x = (turn.player.id == state.player_one.id) ? 10 : 1120
 
-  labels = [{ x: x, y: 710, text: "Angle:    #{turn.angle}_" }.merge(FANCY_WHITE)]
+  labels = [{x: x, y: 710, text: "Angle:    #{turn.angle}_"}.merge(FANCY_WHITE)]
 
   if turn.angle_committed
-    labels << { x: x, y: 690, text: "Velocity: #{turn.velocity}_" }.merge(FANCY_WHITE)
+    labels << {x: x, y: 690, text: "Velocity: #{turn.velocity}_"}.merge(FANCY_WHITE)
   end
 
   outputs.labels << labels
@@ -280,7 +278,7 @@ def submit_input(turn)
     velocity = turn.velocity.to_i / 5
 
     turn.player.animated.enabled = true
-    create_entity(:banana, owned: { owner: turn.player }, position: { x: turn.player.position.x + 25, y: turn.player.position.y + 60 }, angled: { angle: angle }, acceleration: { x: angle.vector_x(velocity), y: angle.vector_y(velocity) })
+    create_entity(:banana, owned: {owner: turn.player}, position: {x: turn.player.position.x + 25, y: turn.player.position.y + 60}, angled: {angle: angle}, acceleration: {x: angle.vector_x(velocity), y: angle.vector_y(velocity)})
   end
 end
 
@@ -317,7 +315,7 @@ def generate_building(x, floors, rooms)
   width = BUILDING_ROOM_WIDTH * rooms + BUILDING_ROOM_SPACING * (rooms + 1)
   height = BUILDING_ROOM_HEIGHT * floors + BUILDING_ROOM_SPACING * (floors + 1)
 
-  create_entity(:building, position: { x: x, y: 0 }, size: { width: width, height: height }, solids: { solids: [[x - 1, 0, width + 2, height + 1, FANCY_WHITE.values], [x, 0, width, height, random_building_color], windows_for_building(x, floors, rooms)] })
+  create_entity(:building, position: {x: x, y: 0}, size: {width: width, height: height}, solids: {solids: [[x - 1, 0, width + 2, height + 1, FANCY_WHITE.values], [x, 0, width, height, random_building_color], windows_for_building(x, floors, rooms)]})
 end
 
 def generate_player(player, building, id)
@@ -335,7 +333,7 @@ def windows_for_building(x, floors, rooms)
       (BUILDING_ROOM_HEIGHT * floor) + (BUILDING_ROOM_SPACING * (floor + 1)),
       BUILDING_ROOM_WIDTH,
       BUILDING_ROOM_HEIGHT,
-      random_window_color,
+      random_window_color
     ]
   end
 end
@@ -344,7 +342,7 @@ def random_building_color
   [
     [99, 0, 107],
     [35, 64, 124],
-    [35, 136, 162],
+    [35, 136, 162]
   ].sample
 end
 
@@ -355,6 +353,6 @@ end
 def random_window_color
   [
     [88, 62, 104],
-    [253, 224, 187],
+    [253, 224, 187]
   ].sample
 end

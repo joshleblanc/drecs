@@ -1,4 +1,4 @@
-world(:game, 
+world(:game,
   systems: [
     :render_background,
     :generate_stage,
@@ -20,14 +20,13 @@ world(:game,
     :render_turn_input,
     :check_win,
     :handle_next_turn
-  ], 
+  ],
   entities: [
     :background,
     :scoreboard,
-    { current_turn: { as: :current_turn } },
-    { wind: { as: :wind } },
-    { gravity: { as: :gravity } },
-    { gorilla: { as: :player_one, animated: { idle_sprite: "sprites/left-idle.png", frames: [[5, "sprites/left-0.png"], [5, "sprites/left-1.png"], [5, "sprites/left-2.png"]] } } },
-    { gorilla: { as: :player_two, animated: { idle_sprite: "sprites/right-idle.png", frames: [[5, "sprites/right-0.png"], [5, "sprites/right-1.png"], [5, "sprites/right-2.png"]] } } },
-  ]
-)
+    {current_turn: {as: :current_turn}},
+    {wind: {as: :wind}},
+    {gravity: {as: :gravity}},
+    {gorilla: {as: :player_one, animated: {idle_sprite: "sprites/left-idle.png", frames: [[5, "sprites/left-0.png"], [5, "sprites/left-1.png"], [5, "sprites/left-2.png"]]}}},
+    {gorilla: {as: :player_two, animated: {idle_sprite: "sprites/right-idle.png", frames: [[5, "sprites/right-0.png"], [5, "sprites/right-1.png"], [5, "sprites/right-2.png"]]}}}
+  ])

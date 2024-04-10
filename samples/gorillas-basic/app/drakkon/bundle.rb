@@ -1,2 +1,2 @@
-require 'app/drakkon/manifest.rb' 
-require 'app/drakkon/font_index.rb' 
+require "app/drakkon/manifest"
+require "app/drakkon/font_index"

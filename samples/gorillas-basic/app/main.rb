@@ -2,7 +2,7 @@ require "lib/drecs"
 
 include Drecs::Main
 
-FANCY_WHITE = { r: 253, g: 252, b: 253 }
+FANCY_WHITE = {r: 253, g: 252, b: 253}
 
 require_relative "entities"
 require_relative "components"
