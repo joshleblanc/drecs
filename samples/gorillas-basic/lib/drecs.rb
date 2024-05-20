@@ -72,10 +72,11 @@ module Drecs
       e.components = []
 
       Drecs::ENTITIES[name].each do |k, v|
-        add_component(e, k, v.merge(overrides[k] || {}))
+        add_component(e, k, v.dup.merge(overrides[k] || {}))
       end
     end
     $args.state.entities << entity
+
     $args.state[state_alias.to_sym] = entity if state_alias
 
     entity
@@ -98,12 +99,13 @@ module Drecs
   def set_world(name)
     $args.state.entities = []
     $args.state.systems = []
+    $args.state.active_world = name
 
     world = Drecs::WORLDS[name]
 
     world.entities.each do |entity|
       if entity.is_a? Hash
-        entity.each(&method(:create_entity))
+        entity.each { |k, v| create_entity(k, v)}
       else
         create_entity(entity)
       end
@@ -125,8 +127,12 @@ module Drecs
 
       next unless s
 
-      system_entities = args.state.entities.select do |e|
-        has_components?(e, *s.components)
+      system_entities = if s.components.empty?
+        args.state.entities
+      else
+        args.state.entities.select do |e|
+          has_components?(e, *s.components)
+        end
       end
 
       args.tap do |klass|
