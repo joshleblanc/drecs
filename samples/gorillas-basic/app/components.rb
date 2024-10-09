@@ -1,3 +1,5 @@
+include Drecs::Main
+
 component :acceleration, {x: 0, y: 0}
 component :animated, {enabled: false, idle_sprite: nil, index: 0, frame_tick_count: 0, frames: []}
 component :background_color, color: [33, 32, 87]

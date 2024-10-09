@@ -2,16 +2,33 @@
   "platforms": [
 
   ],
-  "version": "5.22",
+  "version": "6.3",
   "image_index": false,
   "manifest": true,
-  "bundle_compile": true,
+  "bundle_compile": false,
   "font_index": true,
   "gems": {
+    "Drecs": {
+      "source": "local",
+      "data": {
+        "path": "../..",
+        "modules": [
+
+        ],
+        "files": {
+          "lib/drecs.rb": {
+            "weight": 10,
+            "file": "lib/drecs.rb"
+          }
+        }
+      },
+      "name": "drecs"
+    }
   },
-  "manifest_digest": "6d943b22dadda69167102b44d482c412",
+  "manifest_digest": "e8a43d16a914b1cdcb8df716593b9da8",
   "font_digest": "d41d8cd98f00b204e9800998ecf8427e",
-  "bundle_digest": "99914b932bd37a50b983c5e7c90ae93b",
+  "bundle_digest": "6b87a6c17600f7c6b6b2f46a0ca71dec",
   "sound_index": true,
-  "sound_digest": "d41d8cd98f00b204e9800998ecf8427e"
+  "sound_digest": "d41d8cd98f00b204e9800998ecf8427e",
+  "manifest_compile": false
 }

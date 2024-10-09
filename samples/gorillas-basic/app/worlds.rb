@@ -1,3 +1,5 @@
+include Drecs::Main
+
 world(:game,
   systems: [
     :render_background,

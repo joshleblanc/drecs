@@ -1,3 +1,5 @@
+include Drecs::Main
+
 entity :background, :background_color
 entity :banana, :acceleration, :collides, :owned, :position, :rendered, :rotation, size: {width: 15, height: 15}, sprite: {path: "sprites/banana.png"}
 entity :building, :ephemeral, :explodes, :position, :size, :solid, :solids, :static_rendered

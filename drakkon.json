@@ -1,0 +1,14 @@
+{
+    "name": "Drecs",
+    "version": "1.0.0",
+    "modules": [
+        {
+            "name": "Drecs",
+            "description": "Super simple ECS library",
+            "weight": 100,
+            "files": [
+                "lib/drecs"
+            ]
+        }
+    ]
+}

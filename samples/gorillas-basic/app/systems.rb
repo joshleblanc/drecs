@@ -1,3 +1,5 @@
+include Drecs::Main
+
 BUILDING_HEIGHTS = [4, 4, 6, 8, 15, 18, 20]
 BUILDING_ROOM_SIZES = [4, 5, 6, 7]
 BUILDING_ROOM_WIDTH = 10
