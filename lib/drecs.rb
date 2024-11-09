@@ -40,6 +40,12 @@ module Drecs
     end
   end
 
+  def b(label = "")
+    cur = Time.now
+    yield
+    log "#{label}: #{((Time.now - cur) / (1/60))}"
+  end
+
   def add_component(entity, component, **overrides)
     c = entity[component] || Drecs::COMPONENTS[component]
 
@@ -75,16 +81,16 @@ module Drecs
         add_component(e, k, v.dup.merge(overrides[k] || {}))
       end
     end
-    $args.state.entities << entity
 
+    $args.state.entities << entity
     $args.state[state_alias.to_sym] = entity if state_alias
 
     entity
   end
 
   def delete_entity(entity)
+    $args.state.as_hash.delete(entity.alias)
     $args.state.entities.delete(entity)
-    $args.state[entity.alias] = nil if entity.alias
   end
 
   def add_system(system)
@@ -97,6 +103,10 @@ module Drecs
   end
 
   def set_world(name)
+    if $args.state.entities 
+      h = $args.state.as_hash
+      $args.state.entities.select { _1.alias }.each { h.delete(_1.alias) }
+    end
     $args.state.entities = []
     $args.state.systems = []
     $args.state.active_world = name
@@ -138,7 +148,7 @@ module Drecs
       args.tap do |klass|
         klass.instance_exec(system_entities, &s.block)
       end
-    end
+    end    
   end
 
   module Main
