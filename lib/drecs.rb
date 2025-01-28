@@ -65,10 +65,6 @@ module Drecs
   end
 
   def create_entity(name, **overrides)
-    unless Drecs::ENTITIES[name]
-      return nil
-    end
-
     $args.state.entities ||= []
 
     state_alias = overrides.delete(:as)
@@ -77,7 +73,7 @@ module Drecs
       e.alias = state_alias
       e.components = []
 
-      Drecs::ENTITIES[name].each do |k, v|
+      Drecs::ENTITIES[name]&.each do |k, v|
         add_component(e, k, v.dup.merge(overrides[k] || {}))
       end
     end
