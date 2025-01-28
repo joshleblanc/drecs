@@ -1,6 +1,9 @@
 FANCY_WHITE = {r: 253, g: 252, b: 253}
 
-require_relative 'drakkon/bundle.rb'
+require_relative "components"
+require_relative "entities"
+require_relative "systems"
+require_relative "worlds"
 
 def defaults(args)
   return unless args.state.tick_count == 0

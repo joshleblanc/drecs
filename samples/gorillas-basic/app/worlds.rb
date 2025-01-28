@@ -29,6 +29,6 @@ world(:game,
     {current_turn: {as: :current_turn}},
     {wind: {as: :wind}},
     {gravity: {as: :gravity}},
-    {gorilla: {as: :player_one, animated: {idle_sprite: "sprites/left-idle.png", frames: [[5, "sprites/left-0.png"], [5, "sprites/left-1.png"], [5, "sprites/left-2.png"]]}}},
-    {gorilla: {as: :player_two, animated: {idle_sprite: "sprites/right-idle.png", frames: [[5, "sprites/right-0.png"], [5, "sprites/right-1.png"], [5, "sprites/right-2.png"]]}}}
+    {gorilla: {as: :player_one, animated: {idle_sprite: "samples/gorillas-basic/sprites/left-idle.png", frames: [[5, "samples/gorillas-basic/sprites/left-0.png"], [5, "samples/gorillas-basic/sprites/left-1.png"], [5, "samples/gorillas-basic/sprites/left-2.png"]]}}},
+    {gorilla: {as: :player_two, animated: {idle_sprite: "samples/gorillas-basic/sprites/right-idle.png", frames: [[5, "samples/gorillas-basic/sprites/right-0.png"], [5, "samples/gorillas-basic/sprites/right-1.png"], [5, "samples/gorillas-basic/sprites/right-2.png"]]}}}
   ])
