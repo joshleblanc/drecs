@@ -43,7 +43,8 @@ module Drecs
   def b(label = "")
     cur = Time.now
     yield
-    log "#{label}: #{((Time.now - cur) / (1/60))}"
+    $args.outputs.debug << "#{label}: #{((Time.now - cur) / (1/60))}"
+    # log "#{label}: #{((Time.now - cur) / (1/60))}"
   end
 
   def add_component(entity, component, **overrides)
@@ -120,7 +121,7 @@ module Drecs
     world.systems.each(&method(:add_system))
   end
 
-  def process_systems(args)
+  def process_systems(args, debug: false)
     return unless args.state
 
     args.state.systems ||= []
@@ -128,23 +129,34 @@ module Drecs
 
     systems = args.state.systems.dup
     systems.each do |system|
-      s = Drecs::SYSTEMS[system]
-      s ||= Drecs::SYSTEMS[:"#{system}_system"]
-
-      next unless s
-
-      system_entities = if s.components.empty?
-        args.state.entities
-      else
-        args.state.entities.select do |e|
-          has_components?(e, *s.components)
+      if debug
+        b("System: #{system}") do 
+          process_system(args, system)
         end
+      else
+        process_system(args, system)
       end
-
-      args.tap do |klass|
-        klass.instance_exec(system_entities, &s.block)
-      end
+      
     end    
+  end
+
+  def process_system(args, system)
+    s = Drecs::SYSTEMS[system]
+    s ||= Drecs::SYSTEMS[:"#{system}_system"]
+
+    next unless s
+
+    system_entities = if s.components.empty?
+      args.state.entities
+    else
+      args.state.entities.select do |e|
+        has_components?(e, *s.components)
+      end
+    end
+
+    args.tap do |klass|
+      klass.instance_exec(system_entities, &s.block)
+    end
   end
 
   module Main

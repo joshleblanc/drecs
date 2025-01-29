@@ -5,16 +5,17 @@ RESOLUTION = {
   h: 720
 }
 
-BOIDS_COUNT = 10
+BOIDS_COUNT = 100
 
 SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 4 
 COHESION_WEIGHT = 1
 
-NEIGHBOUR_RANGE = 0
-MIN_VELOCITY = 290
-MAX_VELOCITY = 300
+MOVEMENT_ACCURACY = 2 
 
+NEIGHBOUR_RANGE = 75
+MIN_VELOCITY = 5
+MAX_VELOCITY = 10
 
 component :position, x: 0, y: 0
 component :size, w: 0, h: 0
@@ -23,65 +24,129 @@ component :acceleration, value: 0
 component :behavior, center: { x: 0, y: 0 }, direction: { x: 0, y: 0 }, count: 0
 component :velocity, x: 0, y: 0
 
-system :destination, :position do |entities|
-  entities.each do |entity|
-    destination = { x: 0, y: 0 }
+def neighbours(entity, entities) 
+  n = Array.filter_map(entities) do |other|
+    next if entity == other
+    distance = Geometry.vec2_magnitude(vec2_sub(entity.position, other.position))
+    next if distance >= NEIGHBOUR_RANGE * 2
+    [other, distance]
+  end
+  n.sort_by { |_, dist| dist }.first(MOVEMENT_ACCURACY)
+end
 
-    entities.each do |other|
-      next if entity == other
+def destination(entity, entities)
+  d = { x: 0, y: 0 }
+  
+  neighbors = neighbours(entity, entities)
+  
+  return entity.velocity if neighbors.empty?
+  
+  Array.each(neighbors) do |other, _|
+    d = vec2_add(d, other.position)
+  end
+  
+  d = vec2_div(d, neighbors.length)
+  velocity = vec2_sub(d, entity.position)
+  velocity = vec2_div(velocity, 100)
 
-      destination = vec2_add(destination, other.position)
+  vec2_add(entity.velocity, velocity)
+end
+
+def shy(entity, entities)
+  separation = { x: 0, y: 0 }
+  
+  neighbors = neighbours(entity, entities)
+  
+  return entity.velocity if neighbors.empty?
+  
+  Array.each(neighbors) do |other, magnitude|
+    distance = vec2_sub(entity.position, other.position)
+    if magnitude > 0
+      distance = vec2_div(distance, magnitude * magnitude)
+    end
+    separation = vec2_add(separation, distance)
+  end
+  
+  separation = vec2_div(separation, neighbors.length)
+  separation = vec2_mul(separation, 2.0)
+  
+  vec2_add(entity.velocity, separation)
+end
+
+def insecure(entity, entities)
+  vel = { x: 0, y: 0 }
+  
+  neighbors = neighbours(entity, entities)
+  
+  return entity.velocity if neighbors.empty?
+  
+  Array.each(neighbors) do |other, _|
+    vel = vec2_add(vel, other.velocity)
+  end
+  
+  vel = vec2_div(vel, neighbors.length)
+  vec2_div(vec2_sub(vel, entity.velocity), 4)
+end
+
+
+system :velocity, :position, :velocity do |entities|
+  Array.each(entities) do |entity|
+    b "cohesion" do 
+      cohesion = vec2_mul(destination(entity, entities), COHESION_WEIGHT)
+    end
+    b "separation" do
+      separation = vec2_mul(shy(entity, entities), SEPARATION_WEIGHT)
     end
 
-    destination = vec2_div(destination, entities.count - 1) 
+    b "alignment" do 
+      alignment = vec2_mul(insecure(entity, entities), ALIGNMENT_WEIGHT)
+    end
 
-    velocity = vec2_sub(destination, entity.position)
-    velocity = vec2_div(velocity, 100)
-
-    add_component entity, :velocity, vec2_add(entity.velocity, velocity)
+    velocity = vec2_add(vec2_add(cohesion, separation), alignment)
+    add_component entity, :velocity, velocity
   end
 end
 
-system :shy, :position do |entities|
-  entities.each do |entity|
-    count = { x: 0, y: 0 }
-
-    entities.each do |other|
-      next if entity == other
-      next unless Geometry.vec2_magnitude(vec2_sub(entity.position, other.position)) < NEIGHBOUR_RANGE
-
-      count = vec2_sub(count, vec2_sub(entity.position, other.position))
+system :constrain_velocity, :velocity do |entities|
+  Array.each(entities) do |entity|
+    magnitude = Geometry.vec2_magnitude(entity.velocity)
+    
+    if magnitude < MIN_VELOCITY
+      scale = MIN_VELOCITY / magnitude
+      add_component entity, :velocity, vec2_mul(entity.velocity, scale)
+    elsif magnitude > MAX_VELOCITY
+      scale = MAX_VELOCITY / magnitude
+      add_component entity, :velocity, vec2_mul(entity.velocity, scale)
     end
-
-    add_component entity, :velocity, vec2_add(entity.velocity, count)
-  end
-end
-
-system :insecure, :position do |entities|
-  entities.each do |entity|
-    vel = { x: 0, y: 0 }
-
-    entities.each do |other|
-      next if entity == other
-
-      vel = vec2_add(vel, other.velocity)
-    end
-
-    vel = vec2_div(vel, entities.count - 1)
-
-    add_component entity, :velocity, vec2_div(vec2_sub(vel, entity.velocity), 8)
   end
 end
 
 system :position, :velocity, :position do |entities|
-  entities.each do |entity|
+  Array.each(entities) do |entity|
     add_component entity, :position, vec2_add(entity.position, entity.velocity)
+  end   
+end
+
+system :screen_bounds, :position do |entities|
+  Array.each(entities) do |entity|
+    x = entity.position.x
+    y = entity.position.y
+    
+    x = RESOLUTION[:w] if x < 0
+    x = 0 if x > RESOLUTION[:w]
+    
+    y = RESOLUTION[:h] if y < 0
+    y = 0 if y > RESOLUTION[:h]
+    
+    if x != entity.position.x || y != entity.position.y
+      add_component entity, :position, { x: x, y: y }
+    end
   end
 end
 
 system :draw, :position, :size, :color do |entities|
-  entities.each do |entity|
-    outputs.solids << {
+  outputs.solids << Array.map(entities) do |entity|
+    {
       x: entity.position.x,
       y: entity.position.y,
       w: entity.size.w,
@@ -128,9 +193,9 @@ def create_boid
   boid
 end
 
-world :default, systems: [:destination, :insecure, :position,:draw]
+world :default, systems: [:velocity, :constrain_velocity, :position, :screen_bounds, :draw]
 
-def setup 
+def boot(args)
   set_world :default
   BOIDS_COUNT.times do 
     create_boid
@@ -138,7 +203,9 @@ def setup
 end
 
 def tick(args)
-  setup if args.tick_count == 0 
+  process_systems(args, debug: true)
 
-  process_systems(args)
+  args.outputs.debug << "#{args.gtk.current_framerate} fps"
+  args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
+  args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
 end
