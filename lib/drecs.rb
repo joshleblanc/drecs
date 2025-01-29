@@ -9,6 +9,10 @@ module Drecs
   ENTITIES = {}
   COMPONENTS = {}
   WORLDS = {}
+  COMPONENT_BITS = {}
+  CONFIG = {
+    next_component_bit: 0
+  }
 
   def self.included(base)
     base.extend(ClassMethods)
@@ -25,6 +29,8 @@ module Drecs
     def component(name, **defaults)
       Drecs::COMPONENTS[name] = {}
       Drecs::COMPONENTS[name].merge! defaults
+      Drecs::COMPONENT_BITS[name] = 1 << CONFIG[:next_component_bit]
+      CONFIG[:next_component_bit] += 1
     end
 
     def entity(name, *components, **overrides)
@@ -49,20 +55,19 @@ module Drecs
 
   def add_component(entity, component, **overrides)
     c = entity[component] || Drecs::COMPONENTS[component]
-
     entity[component] = c.merge(overrides)
-    entity.components << component unless entity.components.include? component
+    entity.component_mask ||= 0
+    entity.component_mask |= COMPONENT_BITS[component]
   end
 
   def remove_component(entity, component)
     entity[component] = nil
-    entity.components.delete(component)
+    entity.component_mask &= ~COMPONENT_BITS[component]
   end
 
-  def has_components?(entity, *components)
-    components.all? do |c|
-      entity.components.include? c
-    end
+  def has_components?(entity, *components) 
+    mask = components.reduce(0) { |acc, c| acc | COMPONENT_BITS[c] }
+    (entity.component_mask & mask) == mask
   end
 
   def create_entity(name, **overrides)
@@ -72,7 +77,7 @@ module Drecs
 
     entity = $args.state.new_entity(name) do |e|
       e.alias = state_alias
-      e.components = []
+      e.component_mask = 0
 
       Drecs::ENTITIES[name]&.each do |k, v|
         add_component(e, k, v.dup.merge(overrides[k] || {}))
@@ -110,7 +115,7 @@ module Drecs
 
     world = Drecs::WORLDS[name]
 
-    world.entities.each do |entity|
+    Array.each(world.entities) do |entity|
       if entity.is_a? Hash
         entity.each { |k, v| create_entity(k, v)}
       else
@@ -127,8 +132,7 @@ module Drecs
     args.state.systems ||= []
     args.state.entities ||= []
 
-    systems = args.state.systems.dup
-    systems.each do |system|
+    Array.each(args.state.systems) do |system|
       if debug
         b("System: #{system}") do 
           process_system(args, system)
@@ -149,7 +153,7 @@ module Drecs
     system_entities = if s.components.empty?
       args.state.entities
     else
-      args.state.entities.select do |e|
+      Array.select(args.state.entities) do |e|
         has_components?(e, *s.components)
       end
     end
