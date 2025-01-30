@@ -14,6 +14,186 @@ module Drecs
     next_component_bit: 0
   }
 
+
+  class Ecs
+    attr_reader :name 
+
+    def name(name = nil)
+      if name 
+        @name = name 
+      else
+        @name
+      end
+    end
+  end
+
+  class Entity < Ecs
+    attr_reader :components, :component_mask
+    attr_accessor :world
+
+    def initialize
+      @components = {}
+    end
+
+    def as(name = nil)
+      if name 
+        @alias = name 
+      else
+        @alias
+      end
+    end
+
+    def component(key, data)
+      @components[key] = data
+
+      define_singleton_method(key) { @components[key] }
+    end
+
+    def has_components?(*components)
+      components.all? { |c| @components.keys.include?(c) }
+    end
+  end
+  
+  class Query 
+    def initialize(arr)
+      @arr = arr 
+      @operations = []
+    end
+
+    def with(*components)
+      @operations << Proc.new do |entities| 
+        entities.select { _1.has_components?(*components) } 
+      end
+      self
+    end
+
+    def without(*components)
+      @operations << Proc.new do |entities| 
+        entities.reject { _1.has_components?(*components) } 
+      end
+      self
+    end
+
+    def where(query)
+      @operations.push()
+      self
+    end
+
+    def execute 
+      @operations.inject(@arr) do |entities, operation|
+        operation.call(entities)
+      end
+    end
+  end
+
+  class System < Ecs
+    attr_reader :query, :callback    
+    attr_accessor :world
+
+    def initialize(name = nil)
+      @name = name 
+      @disabled = false
+    end
+
+    def disable!
+      @disabled = true
+    end
+
+    def enable!
+      @disabled = false
+    end
+
+    def disabled?
+      @disabled
+    end
+
+    def query(&blk) 
+      if blk 
+        @query = blk
+      else
+        @query
+      end
+    end
+
+    def callback(&blk)
+      if blk
+        @callback = blk
+      else
+        @callback
+      end
+    end
+  end
+
+  class World < Ecs
+    attr_gtk
+    attr_reader :entities, :systems
+
+    def initialize
+      @entities = []
+      @systems = []
+
+      @debug = debug
+    end
+
+    def _tick(system, args)
+      entities = if system.query 
+        Query.new(@entities).instance_eval(&system.query).execute
+      else
+        @entities
+      end
+      system.instance_exec(entities, &system.callback)
+    end
+
+    def tick(args)
+      self.args = args
+      @systems.reject(&:disabled?).each do |system|
+        if @debug 
+          b("System: #{system.name}") do
+            _tick(system, args)
+          end
+        else
+          _tick(system, args)
+        end
+      end
+    end
+
+    def debug(bool = nil) 
+      if bool.nil?
+        @debug
+      elsif bool
+        @debug = true
+      else
+        @debug = false
+      end
+    end
+
+    def system(name = nil, &blk)
+      if name 
+        @systems.find { _1.name == name }
+      else 
+        system = System.new.tap { _1.instance_eval(&blk) }
+        system.world = self
+        @systems << system
+        system
+      end
+    end
+    
+    def entity(name = nil, &blk)
+      if name 
+        @entities.find { _1.name == name }
+      else 
+        entity = Entity.new.tap { _1.instance_eval(&blk) }
+        entity.world = self
+        if entity.as 
+          define_singleton_method(entity.as) { entity }
+        end
+        @entities << entity
+        entity
+      end
+      
+    end
+  end
+
   def self.included(base)
     base.extend(ClassMethods)
   end
@@ -39,10 +219,10 @@ module Drecs
       overrides.each { |k, v| Drecs::ENTITIES[name][k] = v }
     end
 
-    def world(name, systems: [], entities: [])
-      Drecs::WORLDS[name] = {}
-      Drecs::WORLDS[name].systems = systems
-      Drecs::WORLDS[name].entities = entities
+    def world(&blk)
+      World.new.tap do |world|
+        world.instance_eval(&blk) if blk
+      end
     end
   end
 
