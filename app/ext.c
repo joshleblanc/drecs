@@ -10,6 +10,7 @@
 #undef Data_Make_Struct
 #undef Data_Get_Struct
 
+// This throws a redefined error
 // struct RFloat {
 //   MRB_OBJECT_HEADER;
 //   mrb_float f;
@@ -82,9 +83,10 @@ static struct RClass *world_class;
 
 
 static mrb_value flecs_world_new(mrb_state *mrb, mrb_value self) {
-  ecs_world_t *world = ecs_init();
+  ecs_world_t *p = ecs_init();
   struct RData *d;
-  Data_Make_Struct(mrb, world_class, ecs_world_t, &flecs_world_data_type, world, d);
+  Data_Wrap_Struct(mrb, world_class, &flecs_world_data_type, p);
+  struct RBasic *world = (struct RBasic *)d;
   return mrb_obj_value(world);
 } 
 
@@ -94,6 +96,8 @@ void drb_register_c_extensions_with_api(mrb_state *state, struct drb_api_t *api)
   struct RClass *FFI = drb_api->mrb_module_get(state, "FFI");
   struct RClass *module = drb_api->mrb_define_module_under(state, FFI, "Flecs");
   struct RClass *base = state->object_class;
-  struct RClass *World = drb_api->mrb_define_class_under(state, module, "World", base);
-  drb_api->mrb_define_class_method(state, World, "new", flecs_world_new, MRB_ARGS_REQ(0));
+
+  world_class = drb_api->mrb_define_class_under(state, module, "World", base);
+  MRB_SET_INSTANCE_TT(world_class, MRB_TT_DATA);
+  drb_api->mrb_define_class_method(state, world_class, "new", flecs_world_new, MRB_ARGS_REQ(0));
 }
