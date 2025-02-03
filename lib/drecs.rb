@@ -1,5 +1,4 @@
 # frozen_string_literal: true
-
 module Drecs
   VERSION = "0.1.0"
 
@@ -15,37 +14,49 @@ module Drecs
   }
 
 
-  class Ecs
-    attr_reader :name 
+  module DSL
+    def self.included(base)
+      base.extend(ClassMethods)
+    end
 
-    def name(name = nil)
-      if name 
-        @name = name 
-      else
-        @name
+    module ClassMethods 
+      def prop(name)
+        define_method(name) do |value = nil, &block|
+          if block_given?
+            instance_variable_set("@#{name}", block)
+          elsif !value.nil?
+            instance_variable_set("@#{name}", value)
+          else
+            instance_variable_get("@#{name}")
+          end
+        end
       end
     end
+    
   end
 
-  class Entity < Ecs
+
+  class Entity
+    include DSL
+
     attr_reader :components, :relationships
-    attr_accessor :world
+    attr_accessor :world, :_id
 
     def initialize
       @components = {}
       @relationships = []
     end
 
-    def as(name = nil)
-      if name 
-        @alias = name 
-      else
-        @alias
-      end
-    end
+    prop :name
+    prop :as
+    
 
     def relationship(key, entity)
       @relationships << { key => entity }
+    end
+
+    def [](key)
+      @components[key]
     end
 
     def component(key, data = nil)
@@ -84,45 +95,18 @@ module Drecs
       self
     end
 
-    def where(**query)
-      @operations << Proc.new do |entities|
-        entities.select do |entity|
-          query.all? do |key, value|
-            matches_query?(entity.send(key), value) if entity.respond_to?(key)
-          end
-        end
-      end
-      self
-    end
-
     def execute 
-      @operations.inject(@arr) do |entities, operation|
+      result = @operations.inject(@arr) do |entities, operation|
         operation.call(entities)
       end
-    end
-
-    private
-
-    def matches_query?(field_value, query_value)
-      case query_value
-      when Range
-        field_value.is_a?(Numeric) && query_value.include?(field_value)
-      when Array
-        query_value.include?(field_value)
-      when Hash
-        return false unless field_value.is_a?(Hash)
-        query_value.all? do |k, v|
-          matches_query?(field_value[k], v)
-        end
-      when Proc
-        query_value.call(field_value)
-      else
-        field_value == query_value
-      end
+      @operations.clear
+      result
     end
   end
 
-  class System < Ecs
+  class System
+    include DSL 
+
     attr_reader :query, :callback    
     attr_accessor :world
 
@@ -130,6 +114,10 @@ module Drecs
       @name = name 
       @disabled = false
     end
+
+    prop :name
+    prop :callback
+    prop :query
 
     def disable!
       @disabled = true
@@ -142,25 +130,11 @@ module Drecs
     def disabled?
       @disabled
     end
-
-    def query(&blk) 
-      if blk 
-        @query = blk
-      else
-        @query
-      end
-    end
-
-    def callback(&blk)
-      if blk
-        @callback = blk
-      else
-        @callback
-      end
-    end
   end
 
-  class World < Ecs
+  class World
+    include DSL 
+
     attr_gtk
     attr_reader :entities, :systems
 
@@ -169,10 +143,14 @@ module Drecs
       @systems = []
 
       @debug = debug
+
+      @query = Query.new(@entities)
     end
 
+    prop :name
+
     def query(&blk)
-      Query.new(@entities).instance_eval(&blk).execute
+      @query.instance_eval(&blk).execute
     end
 
     def _tick(system, args)
@@ -225,6 +203,7 @@ module Drecs
         entity = Entity.new
         entity.tap { _1.instance_eval(&blk) } if blk
         entity.world = self
+        entity._id = GTK.create_uuid
         if entity.as 
           define_singleton_method(entity.as) { entity }        
         end

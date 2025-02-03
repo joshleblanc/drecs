@@ -1,5 +1,4 @@
 
-include Drecs::Main
 RESOLUTION = {
   w: 1280,
   h: 720
@@ -69,7 +68,7 @@ end
 
 
 def boot(args)
-  ecs = world do 
+  ecs = Drecs.world do 
     debug true
   end
 
