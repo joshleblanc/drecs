@@ -80,7 +80,7 @@ def boot(args)
 
   ecs.system do
     name :setup
-    callback do |entities|
+    callback do
       BOIDS_COUNT.times do 
         world.entity do 
           name :boid
@@ -101,21 +101,25 @@ def boot(args)
       disable!
     end
   end
-  
-  ecs.system do 
-    name :update_grid
-    query { with(:position) }
-    callback do |entities| 
-      # Clear the grid
+
+  ecs.system do
+    name :clear_grid 
+    callback do 
       GRID_COLS.times do |x|
         GRID_ROWS.times do |y|
           world.grid.data[x][y].clear
         end
       end
+    end
+  end
+  
+  ecs.system do 
+    name :update_grid
+    query { with(:position) }
+    callback do |entity| 
+      # Clear the grid
         
-      # Place each entity in its grid cell
-      Array.each(entities) do |entity|
-        grid_x = (entity.position.x / GRID_CELL_SIZE).floor
+      grid_x = (entity.position.x / GRID_CELL_SIZE).floor
         grid_y = (entity.position.y / GRID_CELL_SIZE).floor
         
         # Ensure within bounds
@@ -123,94 +127,91 @@ def boot(args)
         grid_y = [[grid_y, 0].max, GRID_ROWS - 1].min
         
         world.grid.data[grid_x][grid_y] << entity 
-      end
     end
   end
 
   ecs.system do 
     name :movement
     query { with(:position, :velocity) }
-    callback do |entities|
-      Array.each(entities) do |entity|
-        pos = entity.position
-        vel = entity.velocity
+    callback do |entity|
+      pos = entity.position
+      vel = entity.velocity
+      
+      # Reset vectors
+      COHESION.x = 0
+      COHESION.y = 0
+      SEPARATION.x = 0
+      SEPARATION.y = 0
+      ALIGNMENT.x = 0
+      ALIGNMENT.y = 0
+  
+      neighbours = neighbours(entity, [], world.grid.data)
+      
+      unless neighbours.empty?
+        n_length = neighbours.length.to_f
         
-        # Reset vectors
-        COHESION.x = 0
-        COHESION.y = 0
-        SEPARATION.x = 0
-        SEPARATION.y = 0
-        ALIGNMENT.x = 0
-        ALIGNMENT.y = 0
-    
-        neighbours = neighbours(entity, entities, world.grid.data)
-        
-        unless neighbours.empty?
-          n_length = neighbours.length.to_f
+        Array.each(neighbours) do |other|
+          other_pos = other.position
+          other_vel = other.velocity
           
-          Array.each(neighbours) do |other|
-            other_pos = other.position
-            other_vel = other.velocity
-            
-            # Calculate separation
-            DIFF.x = pos.x - other_pos.x
-            DIFF.y = pos.y - other_pos.y
-            
-            dist = Geometry.vec2_magnitude(DIFF)
-            if dist < NEIGHBOUR_RANGE && dist > 0
-              scale = 1.0 / dist
-              vec2_div(DIFF, dist)
-              vec2_mul(DIFF, scale)
-              vec2_add(SEPARATION, DIFF)
-            end
-            
-            # Accumulate cohesion and alignment
-            vec2_add(COHESION, other_pos)
-            vec2_add(ALIGNMENT, other_vel)
+          # Calculate separation
+          DIFF.x = pos.x - other_pos.x
+          DIFF.y = pos.y - other_pos.y
+          
+          dist = Geometry.vec2_magnitude(DIFF)
+          if dist < NEIGHBOUR_RANGE && dist > 0
+            scale = 1.0 / dist
+            vec2_div(DIFF, dist)
+            vec2_mul(DIFF, scale)
+            vec2_add(SEPARATION, DIFF)
           end
           
-          if args.inputs.mouse.left
-            MOUSE.x = args.inputs.mouse.x
-            MOUSE.y = args.inputs.mouse.y
-            COHESION.x = MOUSE.x
-            COHESION.y = MOUSE.y
-          else
-            vec2_div(COHESION, n_length)
-          end
-          vec2_sub(COHESION, pos)
-          vec2_div(COHESION, 100)
-          vec2_mul(COHESION, COHESION_WEIGHT)
-          
-          vec2_mul(SEPARATION, SEPARATION_WEIGHT)
-          
-          vec2_div(ALIGNMENT, n_length)
-          vec2_sub(ALIGNMENT, vel)
-          vec2_div(ALIGNMENT, 4)
-          vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
-          
-          # Combine forces and update velocity
-          vec2_add(COHESION, SEPARATION)
-          vec2_add(COHESION, ALIGNMENT)
-          vec2_add(vel, COHESION)
-          
-          # Constrain velocity in place
-          magnitude = Geometry.vec2_magnitude(vel)
-          if magnitude < MIN_VELOCITY
-            scale = MIN_VELOCITY / magnitude
-            vec2_mul(vel, scale)
-          elsif magnitude > MAX_VELOCITY
-            scale = MAX_VELOCITY / magnitude
-            vec2_mul(vel, scale)
-          end
-          
-          # Update position
-          vec2_add(pos, vel)
-          
-          pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
-          pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
-    
-          p "We broke it #{pos.x}, #{pos.y}, #{vel}" if pos.x.nan?
+          # Accumulate cohesion and alignment
+          vec2_add(COHESION, other_pos)
+          vec2_add(ALIGNMENT, other_vel)
         end
+        
+        if args.inputs.mouse.left
+          MOUSE.x = args.inputs.mouse.x
+          MOUSE.y = args.inputs.mouse.y
+          COHESION.x = MOUSE.x
+          COHESION.y = MOUSE.y
+        else
+          vec2_div(COHESION, n_length)
+        end
+        vec2_sub(COHESION, pos)
+        vec2_div(COHESION, 100)
+        vec2_mul(COHESION, COHESION_WEIGHT)
+        
+        vec2_mul(SEPARATION, SEPARATION_WEIGHT)
+        
+        vec2_div(ALIGNMENT, n_length)
+        vec2_sub(ALIGNMENT, vel)
+        vec2_div(ALIGNMENT, 4)
+        vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
+        
+        # Combine forces and update velocity
+        vec2_add(COHESION, SEPARATION)
+        vec2_add(COHESION, ALIGNMENT)
+        vec2_add(vel, COHESION)
+        
+        # Constrain velocity in place
+        magnitude = Geometry.vec2_magnitude(vel)
+        if magnitude < MIN_VELOCITY
+          scale = MIN_VELOCITY / magnitude
+          vec2_mul(vel, scale)
+        elsif magnitude > MAX_VELOCITY
+          scale = MAX_VELOCITY / magnitude
+          vec2_mul(vel, scale)
+        end
+        
+        # Update position
+        vec2_add(pos, vel)
+        
+        pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
+        pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
+  
+        p "We broke it #{pos.x}, #{pos.y}, #{vel}" if pos.x.nan?
       end
     end
   end
@@ -218,19 +219,17 @@ def boot(args)
   ecs.system do 
     name :draw 
     query { with(:position, :size, :color) }
-    callback do |entities| 
-      args.outputs.solids << Array.map(entities) do |entity| 
-        {
-          x: entity.position.x,
-          y: entity.position.y,
-          w: entity.size.w,
-          h: entity.size.h,
-          r: entity.color.r,
-          g: entity.color.g,
-          b: entity.color.b,
-          a: entity.color.a
-        }
-      end
+    callback do |entity| 
+      args.outputs.solids << {
+        x: entity.position.x,
+        y: entity.position.y,
+        w: entity.size.w,
+        h: entity.size.h,
+        r: entity.color.r,
+        g: entity.color.g,
+        b: entity.color.b,
+        a: entity.color.a
+      }
     end
   end
 

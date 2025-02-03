@@ -157,9 +157,16 @@ module Drecs
       entities = if system.query 
         query(&system.query)
       else
-        @entities
+        nil
       end
-      system.instance_exec(entities, &system.callback)
+      if entities.nil?
+        system.instance_exec(&system.callback)
+      else 
+        entities.each do |entity|
+          system.instance_exec(entity, &system.callback)
+        end
+      end
+      
     end
 
     def tick(args)
@@ -208,7 +215,6 @@ module Drecs
           define_singleton_method(entity.as) { entity }        
         end
         @entities << entity
-        p "Added entitty #{self}"
         entity
       end
       
