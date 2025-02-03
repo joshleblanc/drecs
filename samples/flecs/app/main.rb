@@ -1,5 +1,7 @@
 def boot(args)
-  world = World.new
+  world = ecs_init
+  bob = ecs_set_name world, 0, "Bob"
+  
   p world
 end
 

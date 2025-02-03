@@ -31,21 +31,6 @@ static mrb_value flecs_ecs_init(mrb_state *mrb, mrb_value self) {
   return mrb_obj_value(world);
 } 
 
-static mrb_value flecs_world_new(mrb_state *mrb, mrb_value self) {
-  ecs_world_t *p = ecs_init();
-  struct RData *d = drb_api->mrb_data_object_alloc(mrb, world_class, p, &flecs_world_data_type);
-  struct RBasic *world = (struct RBasic *)d;
-  return mrb_obj_value(world);
-} 
-
-static mrb_value flecs_world_entity(mrb_state *mrb, mrb_value self) {
-  ecs_world_t *world = drb_api->mrb_data_get_ptr(mrb, self, &flecs_world_data_type);
-  ecs_entity_t *p = ecs_new(world);
-  struct Rdata *d = drb_api->mrb_data_object_alloc(mrb, entity_class, p, &flecs_entity_data_type);
-  struct RBasic *entity = (struct RBasic *)d;
-  return mrb_obj_value(entity);
-}
-
 DRB_FFI_EXPORT
 void drb_register_c_extensions_with_api(mrb_state *state, struct drb_api_t *api) {
   drb_api = api;
