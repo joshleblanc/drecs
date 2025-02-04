@@ -17,7 +17,7 @@ static mrb_value flecs_ecs_init(mrb_state *mrb, mrb_value self) {
 static mrb_value flecs_ecs_new(mrb_state *mrb, mrb_value self) {
   mrb_value w = drb_api->mrb_get_arg1(mrb);
   ecs_world_t *world = (ecs_world_t *)mrb_cptr(w);
-  ecs_entity_t *p = ecs_new(world);
+  ecs_entity_t p = ecs_new(world);
 
   return drb_api->mrb_word_boxing_cptr_value(mrb, p);
 } 
@@ -37,16 +37,25 @@ static mrb_value flecs_ecs_entity_init(mrb_state *mrb, mrb_value self) {
       .rest = NULL
     };
     drb_api->mrb_get_args(mrb, ":", &kwargs);
-    if (mrb_undef_p(kw_values[0])) { world = (ecs_world_t *)mrb_cptr(kw_values[0]); }
-    if (mrb_undef_p(kw_values[1])) { name = drb_api->mrb_string_value_cstr(mrb, &kw_values[1]); }
+    if (!mrb_undef_p(kw_values[0])) { world = (ecs_world_t *)mrb_cptr(kw_values[0]); }
+    if (!mrb_undef_p(kw_values[1])) { name = mrb_symbol(kw_values[1]); }
 
     ecs_entity_t entity = ecs_entity_init(world, &(ecs_entity_desc_t){
+        ._canary = 1,
         .name = name
     });
 
-    return drb_api->mrb_word_boxing_cptr_value(mrb, entity);
+    return mrb_fixnum_value(entity);
+
 }
 
+static mrb_value flecs_ecs_set_name(mrb_state *mrb, mrb_value self) {
+    mrb_value e = drb_api->mrb_get_arg1(mrb);
+    mrb_value name = drb_api->mrb_get_arg2(mrb);
+    ecs_entity_t entity = (ecs_entity_t *)mrb_cptr(e);
+    ecs_entity_t name = mrb_symbol(name);
+    ecs_set_name(world, entity, name);
+}
 
 static mrb_value flecs_ecs_get_scope(mrb_state *mrb, mrb_value self) {
     mrb_value w = drb_api->mrb_get_arg1(mrb);

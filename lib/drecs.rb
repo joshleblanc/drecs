@@ -68,7 +68,7 @@ module Drecs
     end
 
     def has_components?(*components)
-      DrecsExt.has_components?(self, *components)
+      components.all? { |c| @components.keys.include?(c) }
     end
 
     def has?(*stuff)
@@ -93,14 +93,14 @@ module Drecs
 
     def with(*components)
       @operations << Proc.new do |entities| 
-        entities.select { DrecsExt.has_components?(_1, *components) } 
+        entities.select { _1.has_components?(_1, *components) } 
       end
       self
     end
 
     def without(*components)
       @operations << Proc.new do |entities| 
-        entities.reject { DrecsExt.has_components?(_1, *components) } 
+        entities.reject { _1.has_components?(_1, *components) } 
       end
       self
     end
