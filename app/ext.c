@@ -27,7 +27,7 @@ static mrb_value flecs_ecs_entity_init(mrb_state *mrb, mrb_value self) {
     const char *name = NULL;
 
     uint32_t kw_num = 2;
-    const mrb_sym kw_names[] = { "world", "name" };     
+    const mrb_sym kw_names[] = { drb_api->mrb_intern_lit(mrb, "world"), drb_api->mrb_intern_lit(mrb, "name") };
     mrb_value kw_values[kw_num];
     const mrb_kwargs kwargs = {
       .values = kw_values,
