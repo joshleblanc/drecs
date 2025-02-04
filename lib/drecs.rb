@@ -23,10 +23,17 @@ module Drecs
 
     module ClassMethods
       def prop(name)
-        define_method(name) do |value = nil, &block|
+        define_method(name) do |*arr, **hash, &block|
           if block_given?
             instance_variable_set("@#{name}", block)
-          elsif !value.nil?
+          elsif !arr.empty? || !hash.empty?
+            value = if arr.empty?
+              hash
+            elsif arr.size == 1
+              arr.first
+            else 
+              arr
+            end
             instance_variable_set("@#{name}", value)
           else
             instance_variable_get("@#{name}")
@@ -34,7 +41,10 @@ module Drecs
         end
       end
     end
-    
+  end
+  
+  class Component
+    MAP = {}
   end
 
 
@@ -62,6 +72,7 @@ module Drecs
     end
 
     def component(key, data = nil)
+      # component_id = Component::MAP[key]
       @components[key] = data
 
       define_singleton_method(key) { @components[key] }
@@ -78,7 +89,10 @@ module Drecs
 
     def register_with_flecs!
       @entity = FFI::Flecs.ecs_set_name(world.world, 0, name)
-      p @entity
+      components.keys.each do |key|
+        Component::MAP[key] ||= FFI::Flecs.ecs_new(world.world)
+        FFI::Flecs.ecs_add_id(world.world, @entity, Component::MAP[key])
+      end
     end
   end
   
@@ -90,14 +104,14 @@ module Drecs
 
     def with(*components)
       @operations << Proc.new do |entities| 
-        entities.select { _1.has_components?(_1, *components) } 
+        entities.select { _1.has_components?(*components) } 
       end
       self
     end
 
     def without(*components)
       @operations << Proc.new do |entities| 
-        entities.reject { _1.has_components?(_1, *components) } 
+        entities.reject { _1.has_components?(*components) } 
       end
       self
     end
@@ -114,17 +128,25 @@ module Drecs
   class System
     include DSL 
 
-    attr_reader :query, :callback    
+    attr_reader :query, :callback, :with   
     attr_accessor :world
 
     def initialize(name = nil)
       @name = name 
       @disabled = false
+      @with = []
     end
 
     prop :name
     prop :callback
-    prop :query
+    
+    def with(*components) 
+      if components.empty?
+        @with
+      else
+        @with = components.map { |c| Component::MAP[c] }
+      end
+    end
 
     def disable!
       @disabled = true
@@ -158,16 +180,9 @@ module Drecs
 
     prop :name
 
-    def query(&blk)
-      @query.instance_eval(&blk).execute
-    end
-
     def _tick(system, args)
-      entities = if system.query 
-        query(&system.query)
-      else
-        nil
-      end
+      component_ids = system.with
+      entities = component_ids.empty? ? nil : []
       if entities.nil?
         system.instance_exec(&system.callback)
       else 
@@ -208,6 +223,7 @@ module Drecs
         system = System.new.tap { _1.instance_eval(&blk) }
         system.world = self
         @systems << system
+        #FFI::Flecs.ecs_system_init(world)
         system
       end
     end

@@ -29,7 +29,7 @@ static mrb_value flecs_ecs_new(mrb_state *mrb, mrb_value self) {
   ecs_world_t *world = (ecs_world_t *)mrb_cptr(w);
   ecs_entity_t p = ecs_new(world);
 
-  return drb_api->mrb_word_boxing_cptr_value(mrb, p);
+  return mrb_fixnum_value(ecs_new(world));
 } 
 
 static mrb_value flecs_ecs_entity_init(mrb_state *mrb, mrb_value self) {
@@ -70,13 +70,61 @@ static mrb_value flecs_ecs_set_name(mrb_state *mrb, mrb_value self) {
 
 
     const char* name = to_cstring_b(mrb, args[2]);
-    return mrb_fixnum_value((mrb_int)ecs_set_name(world, entity, name));
+    return mrb_fixnum_value(ecs_set_name(world, entity, name));
+}
+
+static mrb_value ecs_new_component(mrb_state *mrb, mrb_value self) {
+    mrb_value *args = 0;
+    mrb_int argc = 0;
+
+    drb_api->mrb_get_args(mrb, "*", &args, &argc);
+
+    ecs_world_t *world = (ecs_world_t *)mrb_cptr(args[0]);
+    const char* name = to_cstring_b(mrb, args[1]);
+
+    ecs_entity_desc_t entity_desc = {0};
+    entity_desc.name = name;
+    entity_desc.symbol = name;
+
+    ecs_entity_t entity = ecs_entity_init(world, &entity_desc);
+
+    ecs_component_desc_t comp_desc = {0};
+    comp_desc.entity = entity;
+    comp_desc.type.size = ECS_SIZEOF(ecs_entity_t);
+    comp_desc.type.alignment = ECS_ALIGNOF(ecs_entity_t);
+
+
+    return mrb_fixnum_value(ecs_component_init(world, &comp_desc));
+}
+
+static mrb_value flecs_ecs_add_id(mrb_state *mrb, mrb_value self) {
+    mrb_value *args = 0;
+    mrb_int argc = 0;
+
+    drb_api->mrb_get_args(mrb, "*", &args, &argc);
+
+    ecs_world_t *world = (ecs_world_t *)mrb_cptr(args[0]);
+    ecs_entity_t entity = (ecs_entity_t)mrb_fixnum(args[1]);
+    ecs_entity_t component = (ecs_entity_t)mrb_fixnum(args[2]);
+
+    ecs_add_id(world, entity, component);
 }
 
 static mrb_value flecs_ecs_get_scope(mrb_state *mrb, mrb_value self) {
     mrb_value w = drb_api->mrb_get_arg1(mrb);
     ecs_world_t *world = (ecs_world_t *)mrb_cptr(w);
     return drb_api->mrb_word_boxing_cptr_value(mrb, ecs_get_scope(world));
+}
+
+static mrb_value flecs_ecs_system_init(mrb_state *mrb, mrb_value self) {
+    mrb_value *args = 0;
+    mrb_int argc = 0;
+
+    drb_api->mrb_get_args(mrb, "*", &args, &argc);
+
+    ecs_world_t *world = (ecs_world_t *)mrb_cptr(args[0]);
+    ecs_entity_t *components = mrb_array_p(args[1]);
+
 }
 
 DRB_FFI_EXPORT
@@ -91,6 +139,8 @@ void drb_register_c_extensions_with_api(mrb_state *state, struct drb_api_t *api)
   drb_api->mrb_define_module_function(state, module, "ecs_get_scope", flecs_ecs_get_scope, MRB_ARGS_REQ(1));
   drb_api->mrb_define_module_function(state, module, "ecs_entity_init", flecs_ecs_entity_init, MRB_ARGS_KEY(2, 0));
   drb_api->mrb_define_module_function(state, module, "ecs_set_name", flecs_ecs_set_name, MRB_ARGS_REQ(3));
+  drb_api->mrb_define_module_function(state, module, "ecs_add_id", flecs_ecs_add_id, MRB_ARGS_REQ(3));
+  drb_api->mrb_define_module_function(state, module, "ecs_system_init", flecs_ecs_system_init, MRB_ARGS_REQ(3));
   // world_class = drb_api->mrb_define_class_under(state, module, "World", base);
   // entity_class = drb_api->mrb_define_class_under(state, module, "Entity", base);
   // MRB_SET_INSTANCE_TT(world_class, MRB_TT_DATA);

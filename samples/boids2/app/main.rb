@@ -115,7 +115,7 @@ def boot(args)
   
   ecs.system do 
     name :update_grid
-    query { with(:position) }
+    with :position
     callback do |entity| 
       # Clear the grid
         
@@ -132,7 +132,7 @@ def boot(args)
 
   ecs.system do 
     name :movement
-    query { with(:position, :velocity) }
+    with :position, :velocity
     callback do |entity|
       pos = entity.position
       vel = entity.velocity
@@ -218,7 +218,7 @@ def boot(args)
 
   ecs.system do 
     name :draw 
-    query { with(:position, :size, :color) }
+    with :position, :velocity
     callback do |entity| 
       args.outputs.solids << {
         x: entity.position.x,
