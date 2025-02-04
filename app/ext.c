@@ -1,11 +1,21 @@
 #include <dragonruby.h>
 #include <mruby.h>
+#include <mruby/string.h>
 #include <mruby/array.h>
 #include <mruby/hash.h>
 #include "../external/flecs.h"
 #include "../external/flecs.c"
 
 static drb_api_t *drb_api;
+
+const char *to_cstring_b(mrb_state *mrb, mrb_value v) {
+  if (mrb_string_p(v)) return drb_api->mrb_string_cstr(mrb, v);
+  if (mrb_symbol_p(v)) {
+    mrb_sym sym = drb_api->mrb_obj_to_sym(mrb, v);
+    return drb_api->mrb_sym_name(mrb, sym);
+  }
+  drb_api->mrb_raisef(mrb, drb_api->mrb_exc_get_id(mrb, drb_api->mrb_intern_lit(mrb, "TypeError")), "expected string or symbol, got %T", v);
+}
 
 
 static mrb_value flecs_ecs_init(mrb_state *mrb, mrb_value self) {
@@ -45,16 +55,22 @@ static mrb_value flecs_ecs_entity_init(mrb_state *mrb, mrb_value self) {
         .name = name
     });
 
-    return mrb_fixnum_value(entity);
+    return drb_api->mrb_word_boxing_int_value(mrb, entity);
 
 }
 
 static mrb_value flecs_ecs_set_name(mrb_state *mrb, mrb_value self) {
-    mrb_value e = drb_api->mrb_get_arg1(mrb);
-    mrb_value name = drb_api->mrb_get_arg2(mrb);
-    ecs_entity_t entity = (ecs_entity_t *)mrb_cptr(e);
-    ecs_entity_t name = mrb_symbol(name);
-    ecs_set_name(world, entity, name);
+    mrb_value *args = 0;
+    mrb_int argc = 0;
+
+    drb_api->mrb_get_args(mrb, "*", &args, &argc);
+
+    ecs_world_t *world = (ecs_world_t *)mrb_cptr(args[0]);
+    ecs_entity_t entity = (ecs_entity_t)mrb_fixnum(args[1]);
+
+
+    const char* name = to_cstring_b(mrb, args[2]);
+    return mrb_fixnum_value((mrb_int)ecs_set_name(world, entity, name));
 }
 
 static mrb_value flecs_ecs_get_scope(mrb_state *mrb, mrb_value self) {
@@ -74,7 +90,7 @@ void drb_register_c_extensions_with_api(mrb_state *state, struct drb_api_t *api)
   drb_api->mrb_define_module_function(state, module, "ecs_new", flecs_ecs_new, MRB_ARGS_REQ(1));
   drb_api->mrb_define_module_function(state, module, "ecs_get_scope", flecs_ecs_get_scope, MRB_ARGS_REQ(1));
   drb_api->mrb_define_module_function(state, module, "ecs_entity_init", flecs_ecs_entity_init, MRB_ARGS_KEY(2, 0));
-
+  drb_api->mrb_define_module_function(state, module, "ecs_set_name", flecs_ecs_set_name, MRB_ARGS_REQ(3));
   // world_class = drb_api->mrb_define_class_under(state, module, "World", base);
   // entity_class = drb_api->mrb_define_class_under(state, module, "Entity", base);
   // MRB_SET_INSTANCE_TT(world_class, MRB_TT_DATA);

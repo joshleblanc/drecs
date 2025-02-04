@@ -77,11 +77,8 @@ module Drecs
     end
 
     def register_with_flecs!
-      p world.world, name
-      @entity = FFI::Flecs.ecs_entity_init(
-        world: world.world,
-        name: name,
-      )
+      @entity = FFI::Flecs.ecs_set_name(world.world, 0, name)
+      p @entity
     end
   end
   
