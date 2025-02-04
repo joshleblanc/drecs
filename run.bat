@@ -1,1 +1,2 @@
-start ../dragonruby.exe mygame --sample %1
+cd ../
+dragonruby.exe mygame --sample %1

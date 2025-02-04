@@ -9,8 +9,10 @@ module Drecs
   COMPONENTS = {}
   WORLDS = {}
   COMPONENT_BITS = {}
+  COMPONENT_MAP = {}
   CONFIG = {
-    next_component_bit: 0
+    next_component_bit: 0,
+    id: 0
   }
 
 
@@ -32,7 +34,6 @@ module Drecs
         end
       end
     end
-    
   end
 
 
@@ -40,11 +41,13 @@ module Drecs
     include DSL
 
     attr_reader :components, :relationships
-    attr_accessor :world, :_id
+    attr_accessor :world, :_id, :archetypes
+
 
     def initialize
       @components = {}
       @relationships = []
+      @archetypes = []
     end
 
     prop :name
@@ -73,17 +76,26 @@ module Drecs
       keys = relationships.map { |r| r.keys.first }
       stuff.all? { |s| components.keys.include?(s) || keys.include?(s) }
     end
+
+    def generate_archetypes!
+      keys = @components.keys.sort
+      keys.size.times do |i|
+        @archetypes << keys[i..-1].sort.hash
+      end
+    end
   end
   
   class Query 
-    def initialize(arr)
+    def initialize(arr, world)
       @arr = arr 
       @operations = []
+      @world = world
     end
 
     def with(*components)
+      key = components.sort.hash
       @operations << Proc.new do |entities| 
-        entities.select { _1.has?(*components) } 
+        @world.archetypes[key] || entities.select { _1.has?(*components) }
       end
       self
     end
@@ -136,15 +148,17 @@ module Drecs
     include DSL 
 
     attr_gtk
-    attr_reader :entities, :systems
+    attr_reader :entities, :systems, :archetypes
 
     def initialize
       @entities = []
       @systems = []
 
+      @archetypes = {}
+
       @debug = debug
 
-      @query = Query.new(@entities)
+      @query = Query.new(@entities, self)
     end
 
     prop :name
@@ -202,6 +216,15 @@ module Drecs
         system
       end
     end
+
+    def cache_archetypes(entity)
+      keys = entity.components.keys
+      (1..keys.length).flat_map { |n| keys.combination(n) }.each do |combination|
+        key = combination.sort.hash
+        @archetypes[key] ||= []
+        @archetypes[key] << entity
+      end
+    end
     
     def entity(name = nil, &blk)
       if name 
@@ -211,10 +234,9 @@ module Drecs
         entity.tap { _1.instance_eval(&blk) } if blk
         entity.world = self
         entity._id = GTK.create_uuid
-        if entity.as 
-          define_singleton_method(entity.as) { entity }        
-        end
+        define_singleton_method(entity.as) { entity } if entity.as          
         @entities << entity
+        cache_archetypes(entity)
         entity
       end
       
