@@ -1,20 +1,23 @@
-
 RESOLUTION = {
   w: 1280,
   h: 720
 }
 
-BOIDS_COUNT = 1500
+DEBUG = true
+
+BOIDS_COUNT = 3000
 
 SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 1.0
 COHESION_WEIGHT = 1.0
 
+BOUNCE = true
+
 MOVEMENT_ACCURACY = 40
 
 NEIGHBOUR_RANGE = 10
 MIN_VELOCITY = 2
-MAX_VELOCITY = 100
+MAX_VELOCITY = 4
 
 GRID_CELL_SIZE = NEIGHBOUR_RANGE
 GRID_COLS = (RESOLUTION.w / GRID_CELL_SIZE).ceil
@@ -43,7 +46,8 @@ def neighbours(entity, entities, grid, &blk)
       
       unless check_x < 0 || check_x >= GRID_COLS || check_y < 0 || check_y >= GRID_ROWS
         i = 0
-        while i < grid[check_x][check_y].size
+        l = grid[check_x][check_y].length
+        while i < l
           blk.call(grid[check_x][check_y][i]) if blk
           i += 1
           c += 1
@@ -83,7 +87,7 @@ end
 
 def boot(args)
   ecs = Drecs.world do 
-    debug true
+    debug DEBUG
   end
 
   ecs.entity do 
@@ -95,7 +99,8 @@ def boot(args)
   ecs.system do
     name :setup
     callback do
-      BOIDS_COUNT.times do 
+      i = 0
+      while i < BOIDS_COUNT do 
         world.entity do 
           name :boid
           component :position, x: rand * RESOLUTION.w, y: rand * RESOLUTION.h
@@ -117,6 +122,8 @@ def boot(args)
             )
           end
         end
+
+        i += 1
       end
 
       disable!
@@ -147,7 +154,6 @@ def boot(args)
       grid_x = (entity.position.x / GRID_CELL_SIZE).floor.clamp(0, GRID_COLS - 1)
       grid_y = (entity.position.y / GRID_CELL_SIZE).floor.clamp(0, GRID_ROWS - 1)
 
-      world.grid.data[grid_x][grid_y].clear
       world.grid.data[grid_x][grid_y] << entity 
     end
   end
@@ -228,8 +234,14 @@ def boot(args)
       # Update position
       vec2_add(pos, vel)
       
-      pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
-      pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
+      if BOUNCE 
+        vel.x = -vel.x if pos.x < 0 || pos.x > RESOLUTION[:w]
+        vel.y = -vel.y if pos.y < 0 || pos.y > RESOLUTION[:h]
+      else 
+        pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
+        pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
+      end
+
     end
   end
 
@@ -245,8 +257,10 @@ end
 
 def tick(args)
   $args.state.worlds[:default].tick(args)
-  args.outputs.debug << "#{args.gtk.current_framerate} fps"
-  args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
-  args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
-  args.outputs.debug << "boids: #{BOIDS_COUNT}"
+  if DEBUG 
+    args.outputs.debug << "#{args.gtk.current_framerate} fps"
+    args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
+    args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
+    args.outputs.debug << "boids: #{BOIDS_COUNT}"
+  end
 end
