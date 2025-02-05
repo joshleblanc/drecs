@@ -3,7 +3,7 @@ RESOLUTION = {
   h: 720
 }
 
-BOIDS_COUNT = 2000
+BOIDS_COUNT = 3000
 
 SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 1.0
@@ -11,7 +11,7 @@ COHESION_WEIGHT = 1.0
 
 BOUNCE = false
 
-MOVEMENT_ACCURACY = 1
+MOVEMENT_ACCURACY = 2
 
 NEIGHBOUR_RANGE = 10
 MIN_VELOCITY = 2
@@ -90,7 +90,7 @@ end
 
 def boot(args)
   ecs = Drecs.world do 
-    debug false
+    debug true
   end
 
   ecs.entity do 
