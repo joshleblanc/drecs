@@ -79,16 +79,21 @@ module Drecs
       @arr = arr 
       @world = world
       @result = arr
+      @mask_cache = {}
     end
 
     def with(*components)
-      mask = Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
-      @result = @world.archetypes[mask] || @result.select { |e| e.has_components?(mask) }
+      mask = @mask_cache[components] ||= Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
+      if @world.archetypes[mask]
+        @result = @world.archetypes[mask]
+      else 
+        Array.select!(@result) { |e| e.has_components?(mask) }
+      end
       self
     end
 
     def without(*components)
-      mask = Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
+      mask = @mask_cache[components] ||= Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
       Array.reject!(@result) { |e| e.has_components?(mask) }
       self
     end
@@ -175,22 +180,30 @@ module Drecs
       if entities.nil?
         system.instance_exec(&system.callback)
       else 
-        Array.each(entities) do |entity|
-          system.instance_exec(entity, &system.callback)
+        i = 0 
+        c = entities.length
+        while i < c do
+          system.instance_exec(entities[i], &system.callback)
+          i += 1
         end
       end
     end
 
     def tick(args)
       self.args = args
-      Array.each(@systems.reject(&:disabled?)) do |system|
-        if @debug 
-          b("System: #{system.name}") do
-            _tick(system, args)
+      i = 0
+      sl = @systems.length
+      while i < sl do 
+        unless @systems[i].disabled?
+          if @debug 
+            b("System: #{@systems[i].name}") do
+              _tick(@systems[i], args)
+            end
+          else
+            _tick(@systems[i], args)
           end
-        else
-          _tick(system, args)
         end
+        i += 1
       end
     end
 
