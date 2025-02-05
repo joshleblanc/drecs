@@ -65,7 +65,11 @@ module Drecs
     end
 
     def draw(&blk) 
-      define_singleton_method(:draw_override) { |ffi_draw| blk.call(ffi_draw) }
+      @draw_block = blk
+    end
+
+    def draw_override(ffi_draw)
+      @draw_block.call(ffi_draw) if @draw_block
     end
   end
   
@@ -73,32 +77,24 @@ module Drecs
 
     def initialize(arr, world)
       @arr = arr 
-      @operations = []
       @world = world
+      @result = arr
     end
 
     def with(*components)
       mask = Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
-      @operations << Proc.new do |entities| 
-        @world.archetypes[mask] || entities.select { |e| e.has_components?(mask) }
-      end
+      @result = @world.archetypes[mask] || @result.select { |e| e.has_components?(mask) }
       self
     end
 
     def without(*components)
       mask = Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
-      @operations << Proc.new do |entities| 
-        entities.reject { |e| e.has_components?(mask) }
-      end
+      Array.reject!(@result) { |e| e.has_components?(mask) }
       self
     end
 
     def execute 
-      result = @operations.inject(@arr) do |entities, operation|
-        operation.call(entities)
-      end
-      @operations.clear
-      result
+      @result
     end
   end
 
