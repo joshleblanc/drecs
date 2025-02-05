@@ -1,4 +1,7 @@
 # frozen_string_literal: true
+
+$gtk.ffi_misc.gtk_dlopen("drecs")
+
 module Drecs
   VERSION = "0.1.0"
 
@@ -96,13 +99,6 @@ module Drecs
       key = components.sort.hash
       @operations << Proc.new do |entities| 
         @world.archetypes[key] || entities.select { _1.has?(*components) }
-      end
-      self
-    end
-
-    def without(*components)
-      @operations << Proc.new do |entities| 
-        entities.reject { _1.has?(*components) } 
       end
       self
     end
@@ -209,7 +205,7 @@ module Drecs
       if name 
         @systems.find { _1.name == name }
       else 
-        system = System.new.tap { _1.instance_eval(&blk) }
+        system = FFI::Drecs::System.new.tap { _1.instance_eval(&blk) }
         system.world = self
         @systems << system
         system
@@ -229,7 +225,7 @@ module Drecs
       if name 
         @entities.find { _1.name == name }
       else 
-        entity = Entity.new
+        entity = FFI::Drecs::Entity.new
         entity.tap { _1.instance_eval(&blk) } if blk
         entity.world = self
         entity._id = GTK.create_uuid
