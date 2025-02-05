@@ -9,13 +9,13 @@ SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 1.0
 COHESION_WEIGHT = 1.0
 
-BOUNCE = true
+BOUNCE = false
 
-MOVEMENT_ACCURACY = 40
+MOVEMENT_ACCURACY = 1
 
 NEIGHBOUR_RANGE = 10
 MIN_VELOCITY = 2
-MAX_VELOCITY = 20
+MAX_VELOCITY = 10
 
 GRID_CELL_SIZE = NEIGHBOUR_RANGE
 GRID_COLS = (RESOLUTION.w / GRID_CELL_SIZE).ceil
@@ -53,6 +53,7 @@ def neighbours(entity, entities, grid, &blk)
           blk.call(grid[check_x][check_y][i]) if blk
           i += 1
           c += 1
+          return c if c >= MOVEMENT_ACCURACY
         end
       end
       
@@ -233,7 +234,7 @@ def boot(args)
           vec2_mul(vel, scale)
         end
       end
-      
+
       # Update position
       vec2_add(pos, vel)
       
