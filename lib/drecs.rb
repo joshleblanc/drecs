@@ -4,18 +4,6 @@ module Drecs
 
   class Error < StandardError; end
 
-  SYSTEMS = {}
-  ENTITIES = {}
-  COMPONENTS = {}
-  WORLDS = {}
-  COMPONENT_BITS = {}
-  COMPONENT_MAP = {}
-  CONFIG = {
-    next_component_bit: 0,
-    id: 0
-  }
-
-
   module DSL
     def self.included(base)
       base.extend(ClassMethods)
@@ -41,51 +29,44 @@ module Drecs
     include DSL
 
     attr_reader :components, :relationships
-    attr_accessor :world, :_id, :archetypes
-
-
-    def initialize
-      @components = {}
-      @relationships = []
-      @archetypes = []
-    end
+    attr_accessor :world, :_id, :archetypes, :component_mask
 
     prop :name
     prop :as
-    
 
-    def relationship(key, entity)
-      @relationships << { key => entity }
+    def initialize
+      @components = {}
+      @archetypes = []
+      @component_mask = 0
     end
-
+    
     def [](key)
       @components[key]
     end
 
     def component(key, data = nil)
       @components[key] = data
-
+      @component_mask |= world.register_component(key)
       define_singleton_method(key) { @components[key] }
     end
 
-    def has_components?(*components)
-      components.all? { |c| @components.keys.include?(c) }
-    end
-
-    def has?(*stuff)
-      keys = relationships.map { |r| r.keys.first }
-      stuff.all? { |s| components.keys.include?(s) || keys.include?(s) }
+    def has_components?(mask)
+      (component_mask & mask) == mask
     end
 
     def generate_archetypes!
-      keys = @components.keys.sort
-      keys.size.times do |i|
-        @archetypes << keys[i..-1].sort.hash
+      @archetypes = []
+      current_mask = @component_mask
+      
+      while current_mask != 0
+        @archetypes << current_mask
+        current_mask = (current_mask - 1) & @component_mask
       end
     end
   end
   
   class Query 
+
     def initialize(arr, world)
       @arr = arr 
       @operations = []
@@ -93,16 +74,17 @@ module Drecs
     end
 
     def with(*components)
-      key = components.sort.hash
+      mask = Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
       @operations << Proc.new do |entities| 
-        @world.archetypes[key] || entities.select { _1.has?(*components) }
+        @world.archetypes[mask] || entities.select { |e| e.has_components?(mask) }
       end
       self
     end
 
     def without(*components)
+      mask = Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
       @operations << Proc.new do |entities| 
-        entities.reject { _1.has?(*components) } 
+        entities.reject { |e| e.has_components?(mask) }
       end
       self
     end
@@ -147,13 +129,21 @@ module Drecs
   class World
     include DSL 
 
+    COMPONENT_BITS = {}
+
     attr_gtk
     attr_reader :entities, :systems, :archetypes
+
+    prop :name
 
     def initialize
       @entities = []
       @systems = []
 
+      @component_bits = {}
+      @next_component_bit = 0
+      @component_map = {}
+      
       @archetypes = {}
 
       @debug = debug
@@ -161,7 +151,20 @@ module Drecs
       @query = Query.new(@entities, self)
     end
 
-    prop :name
+    def register_component(name)
+      return @component_bits[name] if @component_bits[name]
+      
+      bit = @next_component_bit
+      @component_bits[name] = 1 << bit
+      @component_map[1 << bit] = name
+      @next_component_bit += 1
+      
+      @component_bits[name]
+    end
+  
+    def component_name(bit)
+      @component_map[bit]
+    end
 
     def query(&blk)
       @query.instance_eval(&blk).execute
@@ -217,11 +220,12 @@ module Drecs
     end
 
     def cache_archetypes(entity)
-      keys = entity.components.keys
-      (1..keys.length).flat_map { |n| keys.combination(n) }.each do |combination|
-        key = combination.sort.hash
-        @archetypes[key] ||= []
-        @archetypes[key] << entity
+      # Generate all possible component combinations this entity matches
+      current_mask = entity.component_mask
+      while current_mask != 0
+        @archetypes[current_mask] ||= []
+        @archetypes[current_mask] << entity
+        current_mask = (current_mask - 1) & entity.component_mask
       end
     end
     
@@ -230,8 +234,8 @@ module Drecs
         @entities.find { _1.name == name }
       else 
         entity = Entity.new
-        entity.tap { _1.instance_eval(&blk) } if blk
         entity.world = self
+        entity.tap { _1.instance_eval(&blk) } if blk
         entity._id = GTK.create_uuid
         define_singleton_method(entity.as) { entity } if entity.as          
         @entities << entity
