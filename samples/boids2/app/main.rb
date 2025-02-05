@@ -3,8 +3,6 @@ RESOLUTION = {
   h: 720
 }
 
-DEBUG = true
-
 BOIDS_COUNT = 2000
 
 SEPARATION_WEIGHT = 20
@@ -17,7 +15,7 @@ MOVEMENT_ACCURACY = 40
 
 NEIGHBOUR_RANGE = 10
 MIN_VELOCITY = 2
-MAX_VELOCITY = 4
+MAX_VELOCITY = 20
 
 GRID_CELL_SIZE = NEIGHBOUR_RANGE
 GRID_COLS = (RESOLUTION.w / GRID_CELL_SIZE).ceil
@@ -91,7 +89,7 @@ end
 
 def boot(args)
   ecs = Drecs.world do 
-    debug DEBUG
+    debug false
   end
 
   ecs.entity do 
@@ -199,40 +197,41 @@ def boot(args)
         vec2_add(ALIGNMENT, other_vel)
       end
       
-      next if neighbour_count == 0
+      if neighbour_count > 0
       
-      if args.inputs.mouse.left
-        MOUSE.x = args.inputs.mouse.x
-        MOUSE.y = args.inputs.mouse.y
-        COHESION.x = MOUSE.x
-        COHESION.y = MOUSE.y
-      else
-        vec2_div(COHESION, neighbour_count)
-      end
-      vec2_sub(COHESION, pos)
-      vec2_div(COHESION, COHESION_DIVISOR)
-      vec2_mul(COHESION, COHESION_WEIGHT)
-      
-      vec2_mul(SEPARATION, SEPARATION_WEIGHT)
-      
-      vec2_div(ALIGNMENT, neighbour_count)
-      vec2_sub(ALIGNMENT, vel)
-      vec2_div(ALIGNMENT, ALIGNMENT_DIVISOR)
-      vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
-      
-      # Combine forces and update velocity
-      vec2_add(COHESION, SEPARATION)
-      vec2_add(COHESION, ALIGNMENT)
-      vec2_add(vel, COHESION)
-      
-      # Constrain velocity in place
-      magnitude = Geometry.vec2_magnitude(vel)
-      if magnitude < MIN_VELOCITY
-        scale = MIN_VELOCITY / magnitude
-        vec2_mul(vel, scale)
-      elsif magnitude > MAX_VELOCITY
-        scale = MAX_VELOCITY / magnitude
-        vec2_mul(vel, scale)
+        if args.inputs.mouse.left
+          MOUSE.x = args.inputs.mouse.x
+          MOUSE.y = args.inputs.mouse.y
+          COHESION.x = MOUSE.x
+          COHESION.y = MOUSE.y
+        else
+          vec2_div(COHESION, neighbour_count)
+        end
+        vec2_sub(COHESION, pos)
+        vec2_div(COHESION, COHESION_DIVISOR)
+        vec2_mul(COHESION, COHESION_WEIGHT)
+        
+        vec2_mul(SEPARATION, SEPARATION_WEIGHT)
+        
+        vec2_div(ALIGNMENT, neighbour_count)
+        vec2_sub(ALIGNMENT, vel)
+        vec2_div(ALIGNMENT, ALIGNMENT_DIVISOR)
+        vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
+        
+        # Combine forces and update velocity
+        vec2_add(COHESION, SEPARATION)
+        vec2_add(COHESION, ALIGNMENT)
+        vec2_add(vel, COHESION)
+        
+        # Constrain velocity in place
+        magnitude = Geometry.vec2_magnitude(vel)
+        if magnitude < MIN_VELOCITY
+          scale = MIN_VELOCITY / magnitude
+          vec2_mul(vel, scale)
+        elsif magnitude > MAX_VELOCITY
+          scale = MAX_VELOCITY / magnitude
+          vec2_mul(vel, scale)
+        end
       end
       
       # Update position
@@ -261,10 +260,8 @@ end
 
 def tick(args)
   $args.state.worlds[:default].tick(args)
-  if DEBUG 
-    args.outputs.debug << "#{args.gtk.current_framerate} fps"
-    args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
-    args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
-    args.outputs.debug << "boids: #{BOIDS_COUNT}"
-  end
+  args.outputs.debug << "#{args.gtk.current_framerate} fps"
+  args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
+  args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
+  args.outputs.debug << "boids: #{BOIDS_COUNT}"
 end
