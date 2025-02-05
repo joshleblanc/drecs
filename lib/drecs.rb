@@ -256,11 +256,25 @@ module Drecs
 
     private 
 
-    def b(label = "")
+    def b(label = "", &blk)
       cur = Time.now
-      yield
-      $args.outputs.debug << "#{label}: #{((Time.now - cur) / (1/60))}"
-      # log "#{label}: #{((Time.now - cur) / (1/60))}"
+
+      before = {}
+      after = {}
+
+      ObjectSpace.count_objects(before)
+      
+      blk.call if block_given?
+      
+      ObjectSpace.count_objects(after)
+
+      time_taken = ((Time.now - cur) / (1/60))
+      allocs = after.map do |k,v| 
+        diff = v - before[k]
+        "#{k}:#{diff}" if diff > 0 
+      end.compact
+      debug_msg = "#{label}: #{'%0.3f' % time_taken }ms #{allocs.join(', ')}"
+      $args.outputs.debug << debug_msg
     end
   end
 
