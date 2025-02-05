@@ -63,6 +63,10 @@ module Drecs
         current_mask = (current_mask - 1) & @component_mask
       end
     end
+
+    def draw(&blk) 
+      define_singleton_method(:draw_override) { |ffi_draw| blk.call(ffi_draw) }
+    end
   end
   
   class Query 
@@ -160,10 +164,6 @@ module Drecs
       @next_component_bit += 1
       
       @component_bits[name]
-    end
-  
-    def component_name(bit)
-      @component_map[bit]
     end
 
     def query(&blk)

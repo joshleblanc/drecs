@@ -83,7 +83,7 @@ end
 
 def boot(args)
   ecs = Drecs.world do 
-    debug false
+    debug true
   end
 
   ecs.entity do 
@@ -103,14 +103,14 @@ def boot(args)
           component :color, r: rand(255), g: rand(255), b: rand(255), a: 255
 
           velocity = Geometry.vec2_normalize({ x: rand - 0.5, y: rand - 0.5 })
-          operand = (MIN_VELOCITY + (rand * (MAX_VELOCITY - MIN_VELOCITY)))
+          operand = Numeric.rand(MIN_VELOCITY..MAX_VELOCITY)
           velocity = {
             x: velocity.x * operand,
             y: velocity.y * operand
           }
           component :velocity, velocity
 
-          def draw_override(ffi_draw)
+          draw do |ffi_draw|
             ffi_draw.draw_solid(
               position.x, position.y, size.w, size.h,
               color.r, color.g, color.b, color.a
