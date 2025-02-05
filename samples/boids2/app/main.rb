@@ -5,7 +5,7 @@ RESOLUTION = {
 
 DEBUG = true
 
-BOIDS_COUNT = 3000
+BOIDS_COUNT = 2000
 
 SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 1.0
@@ -28,6 +28,10 @@ SEPARATION = { x: 0, y: 0 }
 ALIGNMENT = { x: 0, y: 0 }
 DIFF = { x: 0, y: 0 }
 MOUSE = { x: 0, y: 0 }
+
+ALIGNMENT_DIVISOR = 4
+COHESION_DIVISOR = 100
+
 
 GRID_RANGE = -1..1
 
@@ -206,14 +210,14 @@ def boot(args)
         vec2_div(COHESION, neighbour_count)
       end
       vec2_sub(COHESION, pos)
-      vec2_div(COHESION, 100)
+      vec2_div(COHESION, COHESION_DIVISOR)
       vec2_mul(COHESION, COHESION_WEIGHT)
       
       vec2_mul(SEPARATION, SEPARATION_WEIGHT)
       
       vec2_div(ALIGNMENT, neighbour_count)
       vec2_sub(ALIGNMENT, vel)
-      vec2_div(ALIGNMENT, 4)
+      vec2_div(ALIGNMENT, ALIGNMENT_DIVISOR)
       vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
       
       # Combine forces and update velocity
