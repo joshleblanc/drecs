@@ -4,15 +4,15 @@ RESOLUTION = {
   h: 720
 }
 
-BOIDS_COUNT = 1000
+BOIDS_COUNT = 2000
 
 SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 1.0
 COHESION_WEIGHT = 1.0
 
-MOVEMENT_ACCURACY = 20
+MOVEMENT_ACCURACY = 1
 
-NEIGHBOUR_RANGE = 10
+NEIGHBOUR_RANGE = 20
 MIN_VELOCITY = 2
 MAX_VELOCITY = 10
 
@@ -26,24 +26,38 @@ ALIGNMENT = { x: 0, y: 0 }
 DIFF = { x: 0, y: 0 }
 MOUSE = { x: 0, y: 0 }
 
-def neighbours(entity, entities, grid) 
+GRID_RANGE = -1..1
+
+def neighbours(entity, entities, grid, &blk) 
   grid_x = (entity.position.x / GRID_CELL_SIZE).floor
   grid_y = (entity.position.y / GRID_CELL_SIZE).floor
-  
   # Check current cell and adjacent cells
-  nearby_entities = []
-  (-1..1).each do |dx|
-    (-1..1).each do |dy|
+  dx = -1
+  dy = -1
+  c = 0
+
+  while dx <= 1 do 
+    while dy <= 1 do 
       check_x = grid_x + dx
       check_y = grid_y + dy
       
-      next if check_x < 0 || check_x >= GRID_COLS || check_y < 0 || check_y >= GRID_ROWS
+      unless check_x < 0 || check_x >= GRID_COLS || check_y < 0 || check_y >= GRID_ROWS
+        i = 0
+        while i < grid[check_x][check_y].size
+          blk.call(grid[check_x][check_y][i]) if blk
+          i += 1
+          c += 1
+        end
+      end
       
-      nearby_entities.concat(grid[check_x][check_y])
+      dy += 1
     end
+    
+    dx += 1
+    dy = -1
   end
-  
-  nearby_entities
+
+  c
 end
 
 def vec2_div(a, b)
@@ -69,7 +83,7 @@ end
 
 def boot(args)
   ecs = Drecs.world do 
-    debug true
+    debug false
   end
 
   ecs.entity do 
@@ -95,6 +109,13 @@ def boot(args)
             y: velocity.y * operand
           }
           component :velocity, velocity
+
+          def draw_override(ffi_draw)
+            ffi_draw.draw_solid(
+              position.x, position.y, size.w, size.h,
+              color.r, color.g, color.b, color.a
+            )
+          end
         end
       end
 
@@ -105,10 +126,15 @@ def boot(args)
   ecs.system do
     name :clear_grid 
     callback do 
-      GRID_COLS.times do |x|
-        GRID_ROWS.times do |y|
+      x = 0
+      y = 0
+      while x < GRID_COLS
+        while y < GRID_ROWS
           world.grid.data[x][y].clear
+          y += 1
         end
+        x += 1
+        y = 0
       end
     end
   end
@@ -118,15 +144,11 @@ def boot(args)
     query { with(:position) }
     callback do |entity| 
       # Clear the grid
-        
-      grid_x = (entity.position.x / GRID_CELL_SIZE).floor
-        grid_y = (entity.position.y / GRID_CELL_SIZE).floor
-        
-        # Ensure within bounds
-        grid_x = [[grid_x, 0].max, GRID_COLS - 1].min
-        grid_y = [[grid_y, 0].max, GRID_ROWS - 1].min
-        
-        world.grid.data[grid_x][grid_y] << entity 
+      grid_x = (entity.position.x / GRID_CELL_SIZE).floor.clamp(0, GRID_COLS - 1)
+      grid_y = (entity.position.y / GRID_CELL_SIZE).floor.clamp(0, GRID_ROWS - 1)
+
+      world.grid.data[grid_x][grid_y].clear
+      world.grid.data[grid_x][grid_y] << entity 
     end
   end
 
@@ -144,92 +166,77 @@ def boot(args)
       SEPARATION.y = 0
       ALIGNMENT.x = 0
       ALIGNMENT.y = 0
+
   
-      neighbours = neighbours(entity, [], world.grid.data)
-      
-      unless neighbours.empty?
-        n_length = neighbours.length.to_f
+      neighbour_count = neighbours(entity, world.query { with(:position, :velocity) }, world.grid.data) do |other|
+        other_pos = other.position
+        other_vel = other.velocity
         
-        Array.each(neighbours) do |other|
-          other_pos = other.position
-          other_vel = other.velocity
-          
-          # Calculate separation
-          DIFF.x = pos.x - other_pos.x
-          DIFF.y = pos.y - other_pos.y
-          
-          dist = Geometry.vec2_magnitude(DIFF)
-          if dist < NEIGHBOUR_RANGE && dist > 0
-            scale = 1.0 / dist
-            vec2_div(DIFF, dist)
-            vec2_mul(DIFF, scale)
-            vec2_add(SEPARATION, DIFF)
-          end
-          
-          # Accumulate cohesion and alignment
-          vec2_add(COHESION, other_pos)
-          vec2_add(ALIGNMENT, other_vel)
+        # Calculate separation
+        DIFF.x = pos.x - other_pos.x
+        DIFF.y = pos.y - other_pos.y
+        
+        dist = Geometry.vec2_magnitude(DIFF)
+        if dist < NEIGHBOUR_RANGE && dist > 0
+          scale = 1.0 / dist
+          vec2_div(DIFF, dist)
+          vec2_mul(DIFF, scale)
+          vec2_add(SEPARATION, DIFF)
         end
         
-        if args.inputs.mouse.left
-          MOUSE.x = args.inputs.mouse.x
-          MOUSE.y = args.inputs.mouse.y
-          COHESION.x = MOUSE.x
-          COHESION.y = MOUSE.y
-        else
-          vec2_div(COHESION, n_length)
-        end
-        vec2_sub(COHESION, pos)
-        vec2_div(COHESION, 100)
-        vec2_mul(COHESION, COHESION_WEIGHT)
-        
-        vec2_mul(SEPARATION, SEPARATION_WEIGHT)
-        
-        vec2_div(ALIGNMENT, n_length)
-        vec2_sub(ALIGNMENT, vel)
-        vec2_div(ALIGNMENT, 4)
-        vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
-        
-        # Combine forces and update velocity
-        vec2_add(COHESION, SEPARATION)
-        vec2_add(COHESION, ALIGNMENT)
-        vec2_add(vel, COHESION)
-        
-        # Constrain velocity in place
-        magnitude = Geometry.vec2_magnitude(vel)
-        if magnitude < MIN_VELOCITY
-          scale = MIN_VELOCITY / magnitude
-          vec2_mul(vel, scale)
-        elsif magnitude > MAX_VELOCITY
-          scale = MAX_VELOCITY / magnitude
-          vec2_mul(vel, scale)
-        end
-        
-        # Update position
-        vec2_add(pos, vel)
-        
-        pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
-        pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
-  
-        p "We broke it #{pos.x}, #{pos.y}, #{vel}" if pos.x.nan?
+        # Accumulate cohesion and alignment
+        vec2_add(COHESION, other_pos)
+        vec2_add(ALIGNMENT, other_vel)
       end
+      
+      next if neighbour_count == 0
+      
+      if args.inputs.mouse.left
+        MOUSE.x = args.inputs.mouse.x
+        MOUSE.y = args.inputs.mouse.y
+        COHESION.x = MOUSE.x
+        COHESION.y = MOUSE.y
+      else
+        vec2_div(COHESION, neighbour_count)
+      end
+      vec2_sub(COHESION, pos)
+      vec2_div(COHESION, 100)
+      vec2_mul(COHESION, COHESION_WEIGHT)
+      
+      vec2_mul(SEPARATION, SEPARATION_WEIGHT)
+      
+      vec2_div(ALIGNMENT, neighbour_count)
+      vec2_sub(ALIGNMENT, vel)
+      vec2_div(ALIGNMENT, 4)
+      vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
+      
+      # Combine forces and update velocity
+      vec2_add(COHESION, SEPARATION)
+      vec2_add(COHESION, ALIGNMENT)
+      vec2_add(vel, COHESION)
+      
+      # Constrain velocity in place
+      magnitude = Geometry.vec2_magnitude(vel)
+      if magnitude < MIN_VELOCITY
+        scale = MIN_VELOCITY / magnitude
+        vec2_mul(vel, scale)
+      elsif magnitude > MAX_VELOCITY
+        scale = MAX_VELOCITY / magnitude
+        vec2_mul(vel, scale)
+      end
+      
+      # Update position
+      vec2_add(pos, vel)
+      
+      pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
+      pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
     end
   end
 
   ecs.system do 
     name :draw 
-    query { with(:position, :size, :color) }
-    callback do |entity| 
-      args.outputs.solids << {
-        x: entity.position.x,
-        y: entity.position.y,
-        w: entity.size.w,
-        h: entity.size.h,
-        r: entity.color.r,
-        g: entity.color.g,
-        b: entity.color.b,
-        a: entity.color.a
-      }
+    callback do 
+      args.outputs.solids << world.query { with(:position, :size, :color) }
     end
   end
 

@@ -176,16 +176,15 @@ module Drecs
       if entities.nil?
         system.instance_exec(&system.callback)
       else 
-        entities.each do |entity|
+        Array.each(entities) do |entity|
           system.instance_exec(entity, &system.callback)
         end
       end
-      
     end
 
     def tick(args)
       self.args = args
-      @systems.reject(&:disabled?).each do |system|
+      Array.each(@systems.reject(&:disabled?)) do |system|
         if @debug 
           b("System: #{system.name}") do
             _tick(system, args)
