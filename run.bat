@@ -1,2 +1,2 @@
 cd ../
-dragonruby.exe mygame --sample %1
+dragonruby.exe drecs --sample %1

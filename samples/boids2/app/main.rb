@@ -93,174 +93,154 @@ def boot(args)
     debug true
   end
 
+  args.state.ecs = ecs
+
   ecs.entity do 
     name :grid
     as :grid
     component :data, Array.new(GRID_COLS) { Array.new(GRID_ROWS) { [] } }
   end
 
-  ecs.system do
-    name :setup
-    callback do
-      i = 0
-      while i < BOIDS_COUNT do 
-        world.entity do 
-          name :boid
-          component :position, x: rand * RESOLUTION.w, y: rand * RESOLUTION.h
-          component :size, w: Numeric.rand(5..5), h: Numeric.rand(5..5)
-          component :color, r: rand(255), g: rand(255), b: rand(255), a: 255
+  i = 0
+  while i < BOIDS_COUNT do 
+    ecs.entity do 
+      name :boid
+      component :position, x: rand * RESOLUTION.w, y: rand * RESOLUTION.h
+      component :size, w: Numeric.rand(5..5), h: Numeric.rand(5..5)
+      component :color, r: rand(255), g: rand(255), b: rand(255), a: 255
 
-          velocity = Geometry.vec2_normalize({ x: rand - 0.5, y: rand - 0.5 })
-          operand = Numeric.rand(MIN_VELOCITY..MAX_VELOCITY)
-          velocity = {
-            x: velocity.x * operand,
-            y: velocity.y * operand
-          }
-          component :velocity, velocity
+      velocity = Geometry.vec2_normalize({ x: rand - 0.5, y: rand - 0.5 })
+      operand = Numeric.rand(MIN_VELOCITY..MAX_VELOCITY)
+      velocity = {
+        x: velocity.x * operand,
+        y: velocity.y * operand
+      }
+      component :velocity, velocity
 
-          draw do |ffi_draw|
-            ffi_draw.draw_solid(
-              position.x, position.y, size.w, size.h,
-              color.r, color.g, color.b, color.a
-            )
-          end
-        end
-
-        i += 1
-      end
-
-      disable!
-    end
-  end
-
-  ecs.system do
-    name :clear_grid 
-    callback do 
-      x = 0
-      y = 0
-      while x < GRID_COLS
-        while y < GRID_ROWS
-          world.grid.data[x][y].clear
-          y += 1
-        end
-        x += 1
-        y = 0
+      draw do |ffi_draw|
+        ffi_draw.draw_solid(
+          position.x, position.y, size.w, size.h,
+          color.r, color.g, color.b, color.a
+        )
       end
     end
-  end
-  
-  ecs.system do 
-    name :update_grid
-    query { with(:position) }
-    callback do |entity| 
-      # Clear the grid
-      grid_x = (entity.position.x / GRID_CELL_SIZE).floor.clamp(0, GRID_COLS - 1)
-      grid_y = (entity.position.y / GRID_CELL_SIZE).floor.clamp(0, GRID_ROWS - 1)
 
-      world.grid.data[grid_x][grid_y] << entity 
-    end
-  end
-
-  ecs.system do 
-    name :movement
-    query { with(:position, :velocity) }
-    callback do |entity|
-      pos = entity.position
-      vel = entity.velocity
-      
-      # Reset vectors
-      COHESION.x = 0
-      COHESION.y = 0
-      SEPARATION.x = 0
-      SEPARATION.y = 0
-      ALIGNMENT.x = 0
-      ALIGNMENT.y = 0
-
-  
-      neighbour_count = neighbours(entity, world.query { with(:position, :velocity) }, world.grid.data) do |other|
-        other_pos = other.position
-        other_vel = other.velocity
-        
-        # Calculate separation
-        DIFF.x = pos.x - other_pos.x
-        DIFF.y = pos.y - other_pos.y
-        
-        dist = Geometry.vec2_magnitude(DIFF)
-        if dist < NEIGHBOUR_RANGE && dist > 0
-          scale = 1.0 / dist
-          vec2_div(DIFF, dist)
-          vec2_mul(DIFF, scale)
-          vec2_add(SEPARATION, DIFF)
-        end
-        
-        # Accumulate cohesion and alignment
-        vec2_add(COHESION, other_pos)
-        vec2_add(ALIGNMENT, other_vel)
-      end
-      
-      if neighbour_count > 0
-      
-        if args.inputs.mouse.left
-          MOUSE.x = args.inputs.mouse.x
-          MOUSE.y = args.inputs.mouse.y
-          COHESION.x = MOUSE.x
-          COHESION.y = MOUSE.y
-        else
-          vec2_div(COHESION, neighbour_count)
-        end
-        vec2_sub(COHESION, pos)
-        vec2_div(COHESION, COHESION_DIVISOR)
-        vec2_mul(COHESION, COHESION_WEIGHT)
-        
-        vec2_mul(SEPARATION, SEPARATION_WEIGHT)
-        
-        vec2_div(ALIGNMENT, neighbour_count)
-        vec2_sub(ALIGNMENT, vel)
-        vec2_div(ALIGNMENT, ALIGNMENT_DIVISOR)
-        vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
-        
-        # Combine forces and update velocity
-        vec2_add(COHESION, SEPARATION)
-        vec2_add(COHESION, ALIGNMENT)
-        vec2_add(vel, COHESION)
-        
-        # Constrain velocity in place
-        magnitude = Geometry.vec2_magnitude(vel)
-        if magnitude < MIN_VELOCITY
-          scale = MIN_VELOCITY / magnitude
-          vec2_mul(vel, scale)
-        elsif magnitude > MAX_VELOCITY
-          scale = MAX_VELOCITY / magnitude
-          vec2_mul(vel, scale)
-        end
-      end
-
-      # Update position
-      vec2_add(pos, vel)
-      
-      if BOUNCE 
-        vel.x = -vel.x if pos.x < 0 || pos.x > RESOLUTION[:w]
-        vel.y = -vel.y if pos.y < 0 || pos.y > RESOLUTION[:h]
-      else 
-        pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
-        pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
-      end
-
-    end
-  end
-
-  ecs.system do 
-    name :draw 
-    callback do 
-      args.outputs.solids << world.query { with(:position, :size, :color) }
-    end
+    i += 1
   end
 
   $args.state.worlds[:default] = ecs
 end
 
 def tick(args)
-  $args.state.worlds[:default].tick(args)
+  ecs = args.state.ecs
+  ecs.query.raw do |_|
+    x = 0
+    y = 0
+    while x < GRID_COLS
+      while y < GRID_ROWS
+        world.grid.data[x][y].clear
+        y += 1
+      end
+      x += 1
+      y = 0
+    end
+  end
+
+  ecs.query { with(:position) }.each do |entity| 
+    grid_x = (entity.position.x / GRID_CELL_SIZE).floor.clamp(0, GRID_COLS - 1)
+    grid_y = (entity.position.y / GRID_CELL_SIZE).floor.clamp(0, GRID_ROWS - 1)
+  
+    world.grid.data[grid_x][grid_y] << entity 
+  end
+
+  ecs.query { with(:position, :velocity) }.each do |entity| 
+    pos = entity.position
+    vel = entity.velocity
+    
+    # Reset vectors
+    COHESION.x = 0
+    COHESION.y = 0
+    SEPARATION.x = 0
+    SEPARATION.y = 0
+    ALIGNMENT.x = 0
+    ALIGNMENT.y = 0
+
+
+    neighbour_count = neighbours(entity, world.query { with(:position, :velocity) }, world.grid.data) do |other|
+      other_pos = other.position
+      other_vel = other.velocity
+      
+      # Calculate separation
+      DIFF.x = pos.x - other_pos.x
+      DIFF.y = pos.y - other_pos.y
+      
+      dist = Geometry.vec2_magnitude(DIFF)
+      if dist < NEIGHBOUR_RANGE && dist > 0
+        scale = 1.0 / dist
+        vec2_div(DIFF, dist)
+        vec2_mul(DIFF, scale)
+        vec2_add(SEPARATION, DIFF)
+      end
+      
+      # Accumulate cohesion and alignment
+      vec2_add(COHESION, other_pos)
+      vec2_add(ALIGNMENT, other_vel)
+    end
+    
+    if neighbour_count > 0
+    
+      if args.inputs.mouse.left
+        MOUSE.x = args.inputs.mouse.x
+        MOUSE.y = args.inputs.mouse.y
+        COHESION.x = MOUSE.x
+        COHESION.y = MOUSE.y
+      else
+        vec2_div(COHESION, neighbour_count)
+      end
+      vec2_sub(COHESION, pos)
+      vec2_div(COHESION, COHESION_DIVISOR)
+      vec2_mul(COHESION, COHESION_WEIGHT)
+      
+      vec2_mul(SEPARATION, SEPARATION_WEIGHT)
+      
+      vec2_div(ALIGNMENT, neighbour_count)
+      vec2_sub(ALIGNMENT, vel)
+      vec2_div(ALIGNMENT, ALIGNMENT_DIVISOR)
+      vec2_mul(ALIGNMENT, ALIGNMENT_WEIGHT)
+      
+      # Combine forces and update velocity
+      vec2_add(COHESION, SEPARATION)
+      vec2_add(COHESION, ALIGNMENT)
+      vec2_add(vel, COHESION)
+      
+      # Constrain velocity in place
+      magnitude = Geometry.vec2_magnitude(vel)
+      if magnitude < MIN_VELOCITY
+        scale = MIN_VELOCITY / magnitude
+        vec2_mul(vel, scale)
+      elsif magnitude > MAX_VELOCITY
+        scale = MAX_VELOCITY / magnitude
+        vec2_mul(vel, scale)
+      end
+    end
+
+    # Update position
+    vec2_add(pos, vel)
+    
+    if BOUNCE 
+      vel.x = -vel.x if pos.x < 0 || pos.x > RESOLUTION[:w]
+      vel.y = -vel.y if pos.y < 0 || pos.y > RESOLUTION[:h]
+    else 
+      pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
+      pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
+    end
+  end
+
+  ecs.query { with(:position, :size, :color) }.raw do |entities|
+    args.outputs.solids << entities
+  end
+
+
   args.outputs.debug << "#{args.gtk.current_framerate} fps"
   args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
   args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"

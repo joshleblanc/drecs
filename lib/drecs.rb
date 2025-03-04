@@ -44,6 +44,10 @@ module Drecs
       @components[key]
     end
 
+    def add(...)
+      component(...)
+    end
+
     def component(key, data = nil)
       @components[key] = data
       @component_mask |= world.register_component(key)
@@ -74,32 +78,48 @@ module Drecs
   end
   
   class Query 
+    attr_accessor :world
 
-    def initialize(arr, world)
-      @arr = arr 
-      @world = world
-      @result = arr
-      @mask_cache = {}
+    def initialize
+      @has = []
+      @not = []
+      @entity_cache = []
+      @has_archetype = nil
+      @not_archetype = nil
+      
+      @entity_cache = []
+      
+      @committed = false
     end
 
     def with(*components)
-      mask = @mask_cache[components] ||= Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
-      if @world.archetypes[mask]
-        @result = @world.archetypes[mask]
-      else 
-        Array.select!(@result) { |e| e.has_components?(mask) }
-      end
-      self
+      return if @committed 
+
+      @has.push *components
+      @has_archetype = @mask_cache[@has] ||= Array.map(@has) { |c| @world.register_component(c) }.reduce(:|)
     end
 
     def without(*components)
-      mask = @mask_cache[components] ||= Array.map(components) { |c| @world.register_component(c) }.reduce(:|)
-      Array.reject!(@result) { |e| e.has_components?(mask) }
-      self
+      return if @committed
+
+      @not.push *components
+      @not_archetype = @mask_cache[@not] ||= Array.map(@not) { |c| @world.register_component(c) }.reduce(:|)
     end
 
-    def execute 
-      @result
+    def commit 
+      @committed = true
+
+      with = Array.select(world.entities) { |e| e.archetype & @has_archetype != 0 }
+      without = Array.select(world.entities) { |e| e.archetype & @not_archetype != 0 }
+      @entity_cache = with - without
+    end
+
+    def each(&blk)
+      Array.each(@entity_cache, &blk)
+    end
+
+    def raw(&blk)
+      blk.call(@entity_cache)
     end
   end
 
@@ -144,6 +164,7 @@ module Drecs
     def initialize
       @entities = []
       @systems = []
+      @queries = []
 
       @component_bits = {}
       @next_component_bit = 0
@@ -152,8 +173,6 @@ module Drecs
       @archetypes = {}
 
       @debug = debug
-
-      @query = Query.new(@entities, self)
     end
 
     def register_component(name)
@@ -167,8 +186,16 @@ module Drecs
       @component_bits[name]
     end
 
-    def query(&blk)
-      @query.instance_eval(&blk).execute
+    def query(name = nil, &blk)
+      if name 
+        @queries.find { _1.name == name }
+      else 
+        query = Query.new.tap { _1.instance_eval(&blk) if blk }
+        query.world = self
+        query.commit
+        @queries << query
+        query
+      end
     end
 
     def _tick(system, args)
@@ -248,10 +275,8 @@ module Drecs
         entity._id = GTK.create_uuid
         define_singleton_method(entity.as) { entity } if entity.as          
         @entities << entity
-        cache_archetypes(entity)
         entity
       end
-      
     end
 
     private 
