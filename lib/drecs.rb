@@ -48,10 +48,26 @@ module Drecs
       component(...)
     end
 
+    def remove(key)
+      old_mask = @component_mask
+      @components.delete(key)
+      @component_mask &= ~world.register_component(key)
+      
+      if old_mask != @component_mask
+        world.notify_component_change(self, old_mask, @component_mask)
+      end
+    end
+
     def component(key, data = nil)
+      old_mask = @component_mask
       @components[key] = data
       @component_mask |= world.register_component(key)
-      define_singleton_method(key) { @components[key] }
+      
+      if old_mask != @component_mask
+        world.notify_component_change(self, old_mask, @component_mask)
+      end
+      
+      define_singleton_method(key) { @components[key] } unless respond_to?(key)
     end
 
     def has_components?(mask)
@@ -97,11 +113,41 @@ module Drecs
       @committed = false
     end
 
+    def react_to_mask_change(old_mask, new_mask, entity)
+      if (@has_archetype & new_mask) == @has_archetype && (@has_archetype & old_mask) != @has_archetype
+        @entity_cache << entity unless @entity_cache.include?(entity)
+      elsif (@has_archetype & old_mask) == @has_archetype && (@has_archetype & new_mask) != @has_archetype
+        @entity_cache.delete(entity)
+      end
+
+      if @not_archetype
+        if (@not_archetype & new_mask) == @not_archetype
+          @entity_cache.delete(entity)
+        elsif (@not_archetype & old_mask) == @not_archetype && (@not_archetype & new_mask) != @not_archetype
+          @entity_cache << entity unless @entity_cache.include?(entity)
+        end
+      end
+    end
+
+    def affected_by_mask_change?(old_mask, new_mask)
+      if @has_archetype
+        return true if (old_mask & new_mask) != (old_mask & @has_archetype)
+      end
+
+      if @not_archetype
+        return true if (old_mask & new_mask) != (old_mask & @not_archetype)
+      end
+
+      false
+    end
+
     def with(*components)
       return if @committed 
 
       @has.push *components
       @has_archetype = @mask_cache[@has] ||= Array.map(@has) { |c| world.register_component(c) }.reduce(:|)
+
+      @has_archetype
     end
 
     def without(*components)
@@ -112,9 +158,7 @@ module Drecs
     end
 
     def commit 
-      existing_query = world.queries.find { _1.has_archetype == @has_archetype && _1.not_archetype == @not_archetype } 
-      
-      return existing_query if existing_query
+      return self if @committed
 
       @committed = true
 
@@ -133,6 +177,10 @@ module Drecs
       @entity_cache = with - without
 
       self
+    end
+
+    def invalidate_cache 
+      @committed = false
     end
 
     def each(&blk)
@@ -200,6 +248,9 @@ module Drecs
       @debug = debug
 
       @tmp_query = Query.new
+
+      @query_cache = {}
+      @query_cache_key = []
     end
 
     def register_component(name)
@@ -213,22 +264,39 @@ module Drecs
       @component_bits[name]
     end
 
-    def query(name = nil, &blk)
-      if name 
-        @queries.find { _1.name == name }
-      else 
-        @tmp_query.clear
-        query = @tmp_query.tap do 
-          _1.world = self
-          _1.instance_eval(&blk) if blk
-        end.commit
+    def notify_component_change(entity, old_mask, new_mask)
+      @queries.each do |query|
+        query.react_to_mask_change(old_mask, new_mask, entity)
+      end
+    end
 
-        if @tmp_query == query 
-          query = query.dup
-          @queries << query
+    def query(name = nil, &blk)
+      if name
+        @queries.find { _1.name == name }
+      else
+        @tmp_query.clear
+        @tmp_query.world = self
+        @tmp_query.instance_eval(&blk) if blk
+        
+        # Create a hash key from component combinations
+        @query_cache_key[0] = @tmp_query.has_archetype
+        @query_cache_key[1] = @tmp_query.not_archetype
+        
+        query_key = [@tmp_query.has_archetype, @tmp_query.not_archetype]
+        
+        # Check cache first
+        cached_query = @query_cache[query_key]
+        return cached_query if cached_query
+        
+        # Commit and cache the query
+        query = @tmp_query.commit
+        if query != @tmp_query
           return query
         else
-          query
+          query = query.dup
+          @queries << query
+          @query_cache[query_key] = query
+          return query
         end
       end
     end

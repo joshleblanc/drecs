@@ -118,6 +118,7 @@ def boot(args)
       component :velocity, velocity
 
       draw do |ffi_draw|
+        next unless position && size && color
         ffi_draw.draw_solid(
           position.x, position.y, size.w, size.h,
           color.r, color.g, color.b, color.a
@@ -238,8 +239,10 @@ def tick(args)
     end
   end
 
-  ecs.query { with(:position, :size, :color) }.raw do |entities|
-    args.outputs.solids << entities
+  args.outputs.solids << ecs.query { with(:position, :size, :color) }.to_a
+
+  if args.inputs.keyboard.key_down.space
+    ecs.query { with(:color) }.to_a.sample.remove(:color)
   end
 
 
