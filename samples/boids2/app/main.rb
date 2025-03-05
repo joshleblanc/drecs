@@ -89,6 +89,8 @@ end
 
 
 def boot(args)
+  GTK.dlopen "ext"
+
   ecs = Drecs.world do 
     debug true
   end
@@ -146,6 +148,10 @@ def boot(args)
 end
 
 def tick(args)
+  now = Time.now 
+  args.state.delta_time = now - (args.state.last_time || now - 0.016)
+  args.state.last_time = now
+  
   ecs = args.state.ecs
   ecs.query.raw do |_|
     x = 0
@@ -167,7 +173,7 @@ def tick(args)
     ecs.grid.data[grid_x][grid_y] << entity 
   end
 
-  ecs.boids.each do |entity|
+  ecs.boids.job do |entity|
     pos = entity.position
     vel = entity.velocity
     
@@ -261,4 +267,5 @@ def tick(args)
   args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
   args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
   args.outputs.debug << "boids: #{BOIDS_COUNT}"
+
 end
