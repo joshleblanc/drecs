@@ -205,57 +205,57 @@ module Drecs
     # @param batch_size [Integer] Number of entities to process concurrently (default: 4)
     # @param &blk [Block] The block to execute for each entity
     # @return [self]
-  #   def job(batch_size = 4, &blk)
-  #     return unless block_given?
+    def job(batch_size = 4, &blk)
+      # return unless block_given?
       
-  #     # Process entities in batches
-  #     i = 0
-  #     while i < @entity_cache.length
-  #       # Process a batch of up to batch_size entities
-  #       j = 0
+      # # Process entities in batches
+      # i = 0
+      # while i < @entity_cache.length
+      #   # Process a batch of up to batch_size entities
+      #   j = 0
         
-  #       # Start worker threads for each entity in the batch
-  #       while j < batch_size
-  #         Worker.run(@entity_cache[i + j], &blk)
-  #         j += 1
-  #       end
+      #   # Start worker threads for each entity in the batch
+      #   while j < batch_size
+      #     Worker.run(@entity_cache[i + j], &blk)
+      #     j += 1
+      #   end
         
-  #       Worker.wait_all
+      #   Worker.wait_all
         
-  #       # Move to the next batch
-  #       i += batch_size
-  #     end
+      #   # Move to the next batch
+      #   i += batch_size
+      # end
       
-  #     self
-  #   end
+      # self
+    end
 
-  def job(batch_size = 500, &blk)
-    return unless block_given?
-    
-    # Process a batch of entities each frame
-    # Store state between frames to track progress
-    @current_job_index ||= 0
-    
-    # Process up to batch_size entities this frame
-    batch_size.times do
-      # Break if we've processed all entities
-      break if @current_job_index >= @entity_cache.length
+    # def job(batch_size = 3000, &blk)
+    #   return unless block_given?
       
-      # Process the current entity
-      yield @entity_cache[@current_job_index]
+    #   # Process a batch of entities each frame
+    #   # Store state between frames to track progress
+    #   @current_job_index ||= 0
       
-      # Move to the next entity
-      @current_job_index += 1
-    end
-    
-    # If we've processed all entities, reset for next time
-    if @current_job_index >= @entity_cache.length
-      @current_job_index = 0
-      return true  # Job complete
-    end
-    
-    return false   # Job still in progress
-  end
+    #   # Process up to batch_size entities this frame
+    #   batch_size.times do
+    #     # Break if we've processed all entities
+    #     break if @current_job_index >= @entity_cache.length
+        
+    #     # Process the current entity
+    #     yield @entity_cache[@current_job_index]
+        
+    #     # Move to the next entity
+    #     @current_job_index += 1
+    #   end
+      
+    #   # If we've processed all entities, reset for next time
+    #   if @current_job_index >= @entity_cache.length
+    #     @current_job_index = 0
+    #     return true  # Job complete
+    #   end
+      
+    #   return false   # Job still in progress
+    # end
   end
 
 
