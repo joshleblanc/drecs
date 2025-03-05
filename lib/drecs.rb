@@ -82,6 +82,10 @@ module Drecs
     attr_reader :has_archetype, :not_archetype
 
     def initialize
+      clear
+    end
+
+    def clear 
       @has = []
       @not = []
       @mask_cache = {}
@@ -194,6 +198,8 @@ module Drecs
       @archetypes = {}
 
       @debug = debug
+
+      @tmp_query = Query.new
     end
 
     def register_component(name)
@@ -211,12 +217,19 @@ module Drecs
       if name 
         @queries.find { _1.name == name }
       else 
-        query = Query.new.tap do
+        @tmp_query.clear
+        query = @tmp_query.tap do 
           _1.world = self
           _1.instance_eval(&blk) if blk
         end.commit
-        @queries << query
-        query
+
+        if @tmp_query == query 
+          query = query.dup
+          @queries << query
+          return query
+        else
+          query
+        end
       end
     end
 
