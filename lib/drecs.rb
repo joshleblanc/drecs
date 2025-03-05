@@ -83,7 +83,7 @@ module Drecs
     def initialize
       @has = []
       @not = []
-      @entity_cache = []
+      @mask_cache = {}
       @has_archetype = nil
       @not_archetype = nil
       
@@ -96,21 +96,31 @@ module Drecs
       return if @committed 
 
       @has.push *components
-      @has_archetype = @mask_cache[@has] ||= Array.map(@has) { |c| @world.register_component(c) }.reduce(:|)
+      @has_archetype = @mask_cache[@has] ||= Array.map(@has) { |c| world.register_component(c) }.reduce(:|)
     end
 
     def without(*components)
       return if @committed
 
       @not.push *components
-      @not_archetype = @mask_cache[@not] ||= Array.map(@not) { |c| @world.register_component(c) }.reduce(:|)
+      @not_archetype = @mask_cache[@not] ||= Array.map(@not) { |c| world.register_component(c) }.reduce(:|)
     end
 
     def commit 
       @committed = true
 
-      with = Array.select(world.entities) { |e| e.archetype & @has_archetype != 0 }
-      without = Array.select(world.entities) { |e| e.archetype & @not_archetype != 0 }
+      with = if @has_archetype
+        Array.select(world.entities) { |e| e.has_components?(@has_archetype) }
+      else 
+        []
+      end
+      
+      without = if @not_archetype
+        Array.select(world.entities) { |e| e.has_components?(@not_archetype) }
+      else 
+        []
+      end
+
       @entity_cache = with - without
     end
 
@@ -120,6 +130,10 @@ module Drecs
 
     def raw(&blk)
       blk.call(@entity_cache)
+    end
+
+    def to_a 
+      @entity_cache
     end
   end
 
@@ -190,8 +204,10 @@ module Drecs
       if name 
         @queries.find { _1.name == name }
       else 
-        query = Query.new.tap { _1.instance_eval(&blk) if blk }
-        query.world = self
+        query = Query.new.tap do
+          _1.world = self
+          _1.instance_eval(&blk) if blk
+        end
         query.commit
         @queries << query
         query

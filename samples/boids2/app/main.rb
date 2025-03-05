@@ -138,7 +138,7 @@ def tick(args)
     y = 0
     while x < GRID_COLS
       while y < GRID_ROWS
-        world.grid.data[x][y].clear
+        ecs.grid.data[x][y].clear
         y += 1
       end
       x += 1
@@ -150,7 +150,7 @@ def tick(args)
     grid_x = (entity.position.x / GRID_CELL_SIZE).floor.clamp(0, GRID_COLS - 1)
     grid_y = (entity.position.y / GRID_CELL_SIZE).floor.clamp(0, GRID_ROWS - 1)
   
-    world.grid.data[grid_x][grid_y] << entity 
+    ecs.grid.data[grid_x][grid_y] << entity 
   end
 
   ecs.query { with(:position, :velocity) }.each do |entity| 
@@ -166,7 +166,7 @@ def tick(args)
     ALIGNMENT.y = 0
 
 
-    neighbour_count = neighbours(entity, world.query { with(:position, :velocity) }, world.grid.data) do |other|
+    neighbour_count = neighbours(entity, ecs.query { with(:position, :velocity) }.to_a, ecs.grid.data) do |other|
       other_pos = other.position
       other_vel = other.velocity
       
