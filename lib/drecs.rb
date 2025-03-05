@@ -79,6 +79,7 @@ module Drecs
   
   class Query 
     attr_accessor :world
+    attr_reader :has_archetype, :not_archetype
 
     def initialize
       @has = []
@@ -107,6 +108,10 @@ module Drecs
     end
 
     def commit 
+      existing_query = world.queries.find { _1.has_archetype == @has_archetype && _1.not_archetype == @not_archetype } 
+      
+      return existing_query if existing_query
+
       @committed = true
 
       with = if @has_archetype
@@ -122,6 +127,8 @@ module Drecs
       end
 
       @entity_cache = with - without
+
+      self
     end
 
     def each(&blk)
@@ -171,7 +178,7 @@ module Drecs
     COMPONENT_BITS = {}
 
     attr_gtk
-    attr_reader :entities, :systems, :archetypes
+    attr_reader :entities, :systems, :archetypes, :queries
 
     prop :name
 
@@ -207,8 +214,7 @@ module Drecs
         query = Query.new.tap do
           _1.world = self
           _1.instance_eval(&blk) if blk
-        end
-        query.commit
+        end.commit
         @queries << query
         query
       end
