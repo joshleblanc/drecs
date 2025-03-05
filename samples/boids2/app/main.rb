@@ -78,8 +78,6 @@ MOUSE = Vector.new(0, 0)
 ALIGNMENT_DIVISOR = 4
 COHESION_DIVISOR = 100
 
-GRID_RANGE = -1..1
-
 def neighbours(entity, entities, grid, &blk)
   grid_x = (entity.position.x * GRID_POS_FACTOR).floor
   grid_y = (entity.position.y * GRID_POS_FACTOR).floor
