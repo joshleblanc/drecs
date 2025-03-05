@@ -129,7 +129,20 @@ def boot(args)
     i += 1
   end
 
-  $args.state.worlds[:default] = ecs
+  ecs.query do 
+    with(:position)
+    as :positions
+  end
+
+  ecs.query do 
+    with(:position, :velocity)
+    as :boids
+  end
+
+  ecs.query do 
+    with(:position, :size, :color)
+    as :renderables
+  end
 end
 
 def tick(args)
@@ -147,16 +160,14 @@ def tick(args)
     end
   end
 
-  ecs.query { with(:position) }.each do |entity| 
+  ecs.positions.each do |entity| 
     grid_x = (entity.position.x / GRID_CELL_SIZE).floor.clamp(0, GRID_COLS - 1)
     grid_y = (entity.position.y / GRID_CELL_SIZE).floor.clamp(0, GRID_ROWS - 1)
   
     ecs.grid.data[grid_x][grid_y] << entity 
   end
 
-  all_boids = ecs.query { with(:position, :velocity) }.to_a
-
-  Array.each(all_boids) do |entity|
+  ecs.boids.each do |entity|
     pos = entity.position
     vel = entity.velocity
     
@@ -169,7 +180,7 @@ def tick(args)
     ALIGNMENT.y = 0
 
 
-    neighbour_count = neighbours(entity, all_boids, ecs.grid.data) do |other|
+    neighbour_count = neighbours(entity, ecs.boids, ecs.grid.data) do |other|
       other_pos = other.position
       other_vel = other.velocity
       
@@ -239,10 +250,10 @@ def tick(args)
     end
   end
 
-  args.outputs.solids << ecs.query { with(:position, :size, :color) }.to_a
+  args.outputs.solids << ecs.renderables.to_a
 
   if args.inputs.keyboard.key_down.space
-    ecs.query { with(:color) }.to_a.sample.remove(:color)
+    ecs.renderables.to_a.sample.remove(:color)
   end
 
 

@@ -94,8 +94,13 @@ module Drecs
   end
   
   class Query 
+    include DSL 
+
     attr_accessor :world
     attr_reader :has_archetype, :not_archetype
+
+    prop :as
+    prop :name
 
     def initialize
       clear
@@ -283,6 +288,7 @@ module Drecs
         @query_cache_key[1] = @tmp_query.not_archetype
         
         query_key = [@tmp_query.has_archetype, @tmp_query.not_archetype]
+
         
         # Check cache first
         cached_query = @query_cache[query_key]
@@ -296,6 +302,9 @@ module Drecs
           query = query.dup
           @queries << query
           @query_cache[query_key] = query
+
+          define_singleton_method(query.as) { query } if query.as && !respond_to?(query.as)
+
           return query
         end
       end
@@ -378,6 +387,8 @@ module Drecs
         entity._id = GTK.create_uuid
         define_singleton_method(entity.as) { entity } if entity.as          
         @entities << entity
+
+        notify_component_change(entity, 0, entity.component_mask)
         entity
       end
     end
