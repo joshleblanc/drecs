@@ -153,7 +153,9 @@ def tick(args)
     ecs.grid.data[grid_x][grid_y] << entity 
   end
 
-  ecs.query { with(:position, :velocity) }.each do |entity| 
+  all_boids = ecs.query { with(:position, :velocity) }.to_a
+
+  Array.each(all_boids) do |entity|
     pos = entity.position
     vel = entity.velocity
     
@@ -166,7 +168,7 @@ def tick(args)
     ALIGNMENT.y = 0
 
 
-    neighbour_count = neighbours(entity, ecs.query { with(:position, :velocity) }.to_a, ecs.grid.data) do |other|
+    neighbour_count = neighbours(entity, all_boids, ecs.grid.data) do |other|
       other_pos = other.position
       other_vel = other.velocity
       
