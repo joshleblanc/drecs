@@ -2,6 +2,7 @@
 // https://wiki.libsdl.org/SDL2/SDL_WaitThread
 // https://wiki.libsdl.org/SDL2/SDL_AtomicSet
 // https://wiki.libsdl.org/SDL2/SDL_AtomicGet
+
 #include <dragonruby.h>
 static struct drb_api_t *drb;
 static SDL_Thread *worker_threads[4];
@@ -9,30 +10,32 @@ static SDL_atomic_t workers_done[4];
 static mrb_value worker_blocks[4];
 static mrb_value worker_entities[4];
 
+
 typedef struct {
   int index;
 } ThreadData;
 
-// Worker thread function that executes a Ruby block on an entity
 static int execute_worker(void *data) {
-  if (data == NULL) {
-    return 0;
-  }
+  // if (data == NULL) {
+  //   drb->drb_log_write("Game", 2, "* ERROR - Worker thread data is NULL");
+  //   return 0;
+  // }
+  // drb->drb_log_write("Game", 2, "* INFO - Starting worker thread");
 
-  ThreadData *thread_data = data;
-  int worker_id = thread_data->index;
-  mrb_state *mrb = drb->mrb_open();
+  // ThreadData *thread_data = data;
+  // int worker_id = thread_data->index;
+  // mrb_state *mrb = drb->mrb_open();
   
-  mrb_value block = worker_blocks[worker_id];
-  mrb_value entity = worker_entities[worker_id];
+  // mrb_value block = worker_blocks[worker_id];
+  // mrb_value entity = worker_entities[worker_id];
   
-  drb->mrb_yield(mrb, block, entity);
+  // drb->mrb_yield(mrb, block, entity);
   
-  drb->SDL_AtomicSet(&workers_done[worker_id], 1);
+  // drb->SDL_AtomicSet(&workers_done[worker_id], 1);
   
-  drb->mrb_close(mrb);
+  // drb->mrb_close(mrb);
 
-  return 1;
+  return 0;
 }
 
 static mrb_value worker_run_m(mrb_state *mrb, mrb_value self) {
@@ -65,8 +68,11 @@ static mrb_value worker_run_m(mrb_state *mrb, mrb_value self) {
   ThreadData *data = malloc(sizeof(ThreadData));
   data->index = worker_id;
 
-  worker_threads[worker_id] = drb->SDL_CreateThread(execute_worker, thread_name, data);
-  
+  drb->SDL_CreateThread(execute_worker, "test", &worker_id);
+
+  // if(worker_threads[worker_id] == NULL) {
+  //   drb->drb_log_write("Game", 2, "is broke");  
+  // }
   return mrb_true_value();
 }
 

@@ -185,7 +185,7 @@ def tick(args)
     grid[grid_x][grid_y] << entity 
   end
 
-  ecs.boids.each do |entity|
+  ecs.boids.job do |entity|
     pos = entity.position
     vel = entity.velocity
     

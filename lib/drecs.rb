@@ -206,27 +206,27 @@ module Drecs
     # @param &blk [Block] The block to execute for each entity
     # @return [self]
     def job(batch_size = 4, &blk)
-      # return unless block_given?
+      return unless block_given?
       
-      # # Process entities in batches
-      # i = 0
-      # while i < @entity_cache.length
-      #   # Process a batch of up to batch_size entities
-      #   j = 0
+      # Process entities in batches
+      i = 0
+      while i < @entity_cache.length
+        # Process a batch of up to batch_size entities
+        j = 0
         
-      #   # Start worker threads for each entity in the batch
-      #   while j < batch_size
-      #     Worker.run(@entity_cache[i + j], &blk)
-      #     j += 1
-      #   end
+        # Start worker threads for each entity in the batch
+        while j < batch_size
+          Worker.run(@entity_cache[i + j], &blk)
+          j += 1
+        end
         
-      #   Worker.wait_all
+        Worker.wait_all
         
-      #   # Move to the next batch
-      #   i += batch_size
-      # end
+        # Move to the next batch
+        i += batch_size
+      end
       
-      # self
+      self
     end
 
     # def job(batch_size = 3000, &blk)
