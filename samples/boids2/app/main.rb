@@ -114,7 +114,7 @@ def neighbours(entity, entities, grid, &blk)
 end
 
 def boot(args)
-  GTK.dlopen "ext"
+  # GTK.dlopen "ext"
 
   ecs = Drecs.world do 
     debug true
@@ -185,7 +185,7 @@ def tick(args)
     grid[grid_x][grid_y] << entity 
   end
 
-  ecs.boids.job do |entity|
+  ecs.boids.each do |entity|
     pos = entity.position
     vel = entity.velocity
     

@@ -425,16 +425,6 @@ module Drecs
         system
       end
     end
-
-    def cache_archetypes(entity)
-      # Generate all possible component combinations this entity matches
-      current_mask = entity.component_mask
-      while current_mask != 0
-        @archetypes[current_mask] ||= []
-        @archetypes[current_mask] << entity
-        current_mask = (current_mask - 1) & entity.component_mask
-      end
-    end
     
     def entity(name = nil, &blk)
       if name 
