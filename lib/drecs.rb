@@ -68,6 +68,7 @@ module Drecs
       end
       
       define_singleton_method(key) { @components[key] } unless respond_to?(key)
+      define_singleton_method("#{key}=") { @components[key] = _1 } unless respond_to?("#{key}=")
     end
 
     def has_components?(mask)
@@ -109,6 +110,11 @@ module Drecs
     end
 
     def react_to_mask_change(old_mask, new_mask, entity)
+      if new_mask == -1
+        @entity_cache.delete entity 
+        return
+      end
+
       if (@has_archetype & new_mask) == @has_archetype && (@has_archetype & old_mask) != @has_archetype
         @entity_cache << entity unless @entity_cache.include?(entity)
       elsif (@has_archetype & old_mask) == @has_archetype && (@has_archetype & new_mask) != @has_archetype
@@ -180,6 +186,10 @@ module Drecs
 
     def each(&blk)
       Array.each(@entity_cache, &blk)
+    end
+
+    def find(&blk)
+      @entity_cache.find(&blk)
     end
 
     def raw(&blk)
@@ -305,6 +315,11 @@ module Drecs
 
       @query_cache = {}
       @query_cache_key = []
+    end
+
+    def delete(entity)
+      @entities.delete entity 
+      notify_component_change(entity, entity.component_mask, -1)
     end
 
     def register_component(name)
@@ -433,6 +448,8 @@ module Drecs
         obj.each do |k, v|
           if k == :draw 
             draw(&v)
+          elsif k == :as
+            as(v)
           else 
             component(k, v)
           end
