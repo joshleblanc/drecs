@@ -24,9 +24,84 @@ module Drecs
     end
   end
 
+  # Base class for all components
+  class Component
+    # Class methods for Component subclasses
+    class << self
+      attr_reader :attributes, :component_name
+      
+      def inherited(subclass)
+        subclass.instance_variable_set(:@attributes, [])
+        subclass.instance_variable_set(:@component_name, subclass.name.split('::').last.to_sym)
+      end
+      
+      # Define attributes for the component
+      def attr(*names)
+        names.each do |name|
+          @attributes ||= []
+          @attributes << name
+          
+          # Define getter and setter methods
+          define_method(name) do
+            @data[name]
+          end
+          
+          define_method("#{name}=") do |value|
+            @data[name] = value
+          end
+        end
+      end
+    end
+    
+    attr_reader :data, :entity
+    
+    def initialize(entity, **attributes)
+      @entity = entity
+      @data = {}
+      
+      # Set initial values for attributes
+      attributes.each do |key, value|
+        if self.class.attributes&.include?(key)
+          @data[key] = value
+        end
+      end
+    end
+    
+    # Allow direct access to data
+    def [](key)
+      @data[key]
+    end
+    
+    def []=(key, value)
+      @data[key] = value
+    end
+  end
 
   class Entity
     include DSL
+
+    # Component class storage at the class level
+    class << self
+      attr_reader :component_classes
+      
+      def inherited(subclass)
+        subclass.instance_variable_set(:@component_classes, {})
+      end
+      
+      # Define component declarations at the class level
+      def component(component_class, **defaults)
+        @component_classes ||= {}
+        @component_classes[component_class.component_name] = {
+          class: component_class,
+          defaults: defaults
+        }
+        
+        # Define a component accessor method
+        define_method(component_class.component_name) do
+          @components[component_class.component_name]
+        end
+      end
+    end
 
     attr_reader :components, :relationships
     attr_accessor :world, :_id, :archetypes, :component_mask
@@ -38,6 +113,13 @@ module Drecs
       @components = {}
       @archetypes = []
       @component_mask = 0
+      
+      # Add any components defined at the class level
+      self.class.component_classes&.each do |name, config|
+        component_class = config[:class]
+        defaults = config[:defaults]
+        add_component(component_class, **defaults)
+      end
     end
     
     def [](key)
@@ -45,29 +127,52 @@ module Drecs
     end
 
     def add(...)
-      component(...)
+      add_component(...)
+    end
+
+    def add_component(component_class, **data)
+      component_name = component_class.component_name
+      old_mask = @component_mask
+      
+      # Create the component instance and store it
+      component_instance = component_class.new(self, **data)
+      @components[component_name] = component_instance
+      @component_mask |= world&.register_component(component_name) || 0
+      
+      if world && old_mask != @component_mask
+        world.notify_component_change(self, old_mask, @component_mask)
+      end
+      
+      component_instance
     end
 
     def remove(key)
       old_mask = @component_mask
       @components.delete(key)
-      @component_mask &= ~world.register_component(key)
+      @component_mask &= ~(world&.register_component(key) || 0)
       
-      if old_mask != @component_mask
+      if world && old_mask != @component_mask
         world.notify_component_change(self, old_mask, @component_mask)
       end
     end
 
+    # For backward compatibility
     def component(key, data = nil)
-      old_mask = @component_mask
-      @components[key] = data
-      @component_mask |= world.register_component(key)
-      
-      if old_mask != @component_mask
-        world.notify_component_change(self, old_mask, @component_mask)
+      if key.is_a?(Class) && key < Component
+        # Handle class-based component
+        add_component(key, **(data || {}))
+      else
+        # Legacy string/symbol key approach
+        old_mask = @component_mask
+        @components[key] = data
+        @component_mask |= world&.register_component(key) || 0
+        
+        if world && old_mask != @component_mask
+          world.notify_component_change(self, old_mask, @component_mask)
+        end
+        
+        define_singleton_method(key) { @components[key] } unless respond_to?(key)
       end
-      
-      define_singleton_method(key) { @components[key] } unless respond_to?(key)
     end
 
     def has_components?(mask)
@@ -138,8 +243,17 @@ module Drecs
 
     def with(*components)
       return if @committed 
-
-      @has.push *components
+      
+      # Handle both symbol/string components and class-based components
+      processed_components = components.map do |comp|
+        if comp.is_a?(Class) && comp < Component
+          comp.component_name
+        else
+          comp
+        end
+      end
+      
+      @has.push *processed_components
       @has_archetype = @mask_cache[@has] ||= Array.map(@has) { |c| world.register_component(c) }.reduce(:|)
 
       @has_archetype
@@ -147,8 +261,17 @@ module Drecs
 
     def without(*components)
       return if @committed
+      
+      # Handle both symbol/string components and class-based components
+      processed_components = components.map do |comp|
+        if comp.is_a?(Class) && comp < Component
+          comp.component_name
+        else
+          comp
+        end
+      end
 
-      @not.push *components
+      @not.push *processed_components
       @not_archetype = @mask_cache[@not] ||= Array.map(@not) { |c| world.register_component(c) }.reduce(:|)
     end
 
@@ -218,40 +341,32 @@ module Drecs
       
       self
     end
-
-    # def job(batch_size = 3000, &blk)
-    #   return unless block_given?
-      
-    #   # Process a batch of entities each frame
-    #   # Store state between frames to track progress
-    #   @current_job_index ||= 0
-      
-    #   # Process up to batch_size entities this frame
-    #   batch_size.times do
-    #     # Break if we've processed all entities
-    #     break if @current_job_index >= @entity_cache.length
-        
-    #     # Process the current entity
-    #     yield @entity_cache[@current_job_index]
-        
-    #     # Move to the next entity
-    #     @current_job_index += 1
-    #   end
-      
-    #   # If we've processed all entities, reset for next time
-    #   if @current_job_index >= @entity_cache.length
-    #     @current_job_index = 0
-    #     return true  # Job complete
-    #   end
-      
-    #   return false   # Job still in progress
-    # end
   end
-
-
 
   class System
     include DSL 
+
+    # Class methods for System subclasses
+    class << self
+      attr_reader :required_components, :excluded_components
+      
+      def inherited(subclass)
+        subclass.instance_variable_set(:@required_components, [])
+        subclass.instance_variable_set(:@excluded_components, [])
+      end
+      
+      # Define required components for the system
+      def with(*components)
+        @required_components ||= []
+        @required_components.push(*components)
+      end
+      
+      # Define excluded components for the system
+      def without(*components)
+        @excluded_components ||= []
+        @excluded_components.push(*components)
+      end
+    end
 
     attr_reader :query, :callback    
     attr_accessor :world
@@ -259,6 +374,14 @@ module Drecs
     def initialize(name = nil)
       @name = name 
       @disabled = false
+      
+      # Set up the query based on class-defined components if available
+      if self.class.required_components.any? || self.class.excluded_components.any?
+        @query = proc do
+          with(*self.class.required_components) if self.class.required_components.any?
+          without(*self.class.excluded_components) if self.class.excluded_components.any?
+        end
+      end
     end
 
     prop :name
@@ -275,6 +398,35 @@ module Drecs
 
     def disabled?
       @disabled
+    end
+    
+    # Process all matching entities
+    def process(&block)
+      @callback = block if block_given?
+    end
+    
+    # Execute this system (called by the world)
+    def execute(args = nil)
+      return if disabled?
+      
+      entities = if query 
+        world.query(&query)
+      elsif self.class.required_components.any? || self.class.excluded_components.any?
+        world.query do 
+          with(*self.class.required_components) if self.class.required_components.any?
+          without(*self.class.excluded_components) if self.class.excluded_components.any?
+        end
+      else
+        nil
+      end
+      
+      if entities.nil?
+        self.instance_exec(&@callback) if @callback
+      else 
+        entities.each do |entity|
+          self.instance_exec(entity, &@callback) if @callback
+        end
+      end
     end
   end
 
@@ -372,19 +524,26 @@ module Drecs
     end
 
     def _tick(system, args)
-      entities = if system.query 
-        query(&system.query)
+      if system.respond_to?(:execute)
+        # New class-based system
+        system.execute(args)
       else
-        nil
-      end
-      if entities.nil?
-        system.instance_exec(&system.callback)
-      else 
-        i = 0 
-        c = entities.length
-        while i < c do
-          system.instance_exec(entities[i], &system.callback)
-          i += 1
+        # Legacy system with callback
+        entities = if system.query 
+          query(&system.query)
+        else
+          nil
+        end
+        
+        if entities.nil?
+          system.instance_exec(&system.callback)
+        else 
+          i = 0 
+          c = entities.length
+          while i < c do
+            system.instance_exec(entities[i], &system.callback)
+            i += 1
+          end
         end
       end
     end
@@ -421,11 +580,27 @@ module Drecs
       if name 
         @systems.find { _1.name == name }
       else 
-        system = System.new.tap { _1.instance_eval(&blk) }
-        system.world = self
-        @systems << system
-        system
+        # Check if name is a System class
+        if name.is_a?(Class) && name < System
+          system = name.new
+          system.world = self
+          @systems << system
+          return system
+        else
+          # Legacy approach with instance_eval
+          system = System.new.tap { _1.instance_eval(&blk) }
+          system.world = self
+          @systems << system
+          system
+        end
       end
+    end
+
+    # Add a system class instance
+    def add_system(system_instance)
+      system_instance.world = self
+      @systems << system_instance
+      system_instance
     end
 
     def <<(obj) 
@@ -440,10 +615,21 @@ module Drecs
       end
     end
     
+    # Create or retrieve an entity
     def entity(name = nil, &blk)
-      if name 
+      if name.is_a?(Class) && name < Entity
+        # Create an instance of the Entity subclass
+        entity = name.new
+        entity.world = self
+        entity._id = GTK.create_uuid
+        @entities << entity
+        notify_component_change(entity, 0, entity.component_mask)
+        return entity
+      elsif name 
+        # Find an entity by name
         @entities.find { _1.name == name }
       else 
+        # Legacy approach with instance_eval
         entity = Entity.new
         entity.world = self
         entity.tap { _1.instance_eval(&blk) } if blk
