@@ -78,7 +78,7 @@ MOUSE = Vector.new(0, 0)
 ALIGNMENT_DIVISOR = 4
 COHESION_DIVISOR = 100
 
-def neighbours(entity, entities, grid, &blk)
+def neighbours(entity, grid, &blk)
   grid_x = (entity.position.x * GRID_POS_FACTOR).floor
   grid_y = (entity.position.y * GRID_POS_FACTOR).floor
   c = 0
@@ -113,16 +113,11 @@ def neighbours(entity, entities, grid, &blk)
   c
 end
 
+
 def boot(args)
-  # GTK.dlopen "ext"
+  args.state.entities = Drecs.world
 
-  ecs = Drecs.world do 
-    debug true
-  end
-
-  args.state.ecs = ecs
-
-  ecs.entity do 
+  args.state.entities.entity do 
     name :grid
     as :grid
     component :data, Array.new(GRID_COLS) { Array.new(GRID_ROWS) { [] } }
@@ -130,41 +125,40 @@ def boot(args)
 
   i = 0
   while i < BOIDS_COUNT do 
-    ecs.entity do 
-      name :boid
-      component :position, Vector.new(rand * RESOLUTION.w, rand * RESOLUTION.h)
-      component :size, Vector.new(5, 5)
-      component :color, { r: rand(255), g: rand(255), b: rand(255), a: 255 }
-
-      velocity = Vector.new(rand - 0.5, rand - 0.5).normalize!
-      velocity.mul!(Numeric.rand(MIN_VELOCITY..MAX_VELOCITY))
-      component :velocity, velocity
-
-      draw do |ffi_draw|
+    args.state.entities << { 
+      position: Vector.new(rand * RESOLUTION.w, rand * RESOLUTION.h),
+      size: Vector.new(5, 5),
+      color: { r: rand(255), g: rand(255), b: rand(255), a: 255 },
+      velocity: Vector.new(rand - 0.5, rand - 0.5).normalize!.mul!(Numeric.rand(MIN_VELOCITY..MAX_VELOCITY)),
+      draw: ->(ffi_draw) do 
         next unless position && size && color
         ffi_draw.draw_solid(
           position.x, position.y, size.x, size.y,
           color.r, color.g, color.b, color.a
         )
       end
-    end
-
+    }
     i += 1
   end
 
-  ecs.query do 
+  args.state.entities.query do 
     with(:position)
     as :positions
   end
 
-  ecs.query do 
+  args.state.entities.query do 
     with(:position, :velocity)
     as :boids
   end
 
-  ecs.query do 
+  args.state.entities.query do 
     with(:position, :size, :color)
     as :renderables
+  end
+
+  args.state.entities.query do 
+    with(:position, :velocity)
+    as :boids
   end
 end
 
@@ -172,20 +166,19 @@ def tick(args)
   now = Time.now 
   args.state.delta_time = now - (args.state.last_time || now - 0.016)
   args.state.last_time = now
-  ecs = args.state.ecs
 
-  grid = ecs.grid.data
+  grid = args.state.entities.grid.data
 
   grid.replace(Array.new(GRID_COLS) { Array.new(GRID_ROWS) { [] }})
 
-  ecs.positions.each do |entity| 
+  args.state.entities.positions.each do |entity| 
     grid_x = (entity.position.x.to_i * GRID_POS_FACTOR).clamp(0, MAX_GRID_COLS)
     grid_y = (entity.position.y.to_i * GRID_POS_FACTOR).clamp(0, MAX_GRID_ROWS)
   
     grid[grid_x][grid_y] << entity 
   end
 
-  ecs.boids.each do |entity|
+  args.state.entities.boids.each do |entity|
     pos = entity.position
     vel = entity.velocity
     
@@ -195,7 +188,7 @@ def tick(args)
     ALIGNMENT.clear!
 
 
-    neighbour_count = neighbours(entity, ecs.boids, grid) do |other|
+    neighbour_count = neighbours(entity, grid) do |other|
       other_pos = other.position
       other_vel = other.velocity
       
@@ -266,10 +259,10 @@ def tick(args)
     end
   end
 
-  args.outputs.solids << ecs.renderables.to_a
+  args.outputs.solids << args.state.entities.with(:position, :size, :color).to_a
 
   if args.inputs.keyboard.key_down.space
-    ecs.renderables.to_a.sample.remove(:color)
+    args.state.entities.with(:position, :size, :color).to_a.sample.remove(:color)
   end
 
 

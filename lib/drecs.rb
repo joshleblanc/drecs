@@ -74,22 +74,12 @@ module Drecs
       (component_mask & mask) == mask
     end
 
-    def generate_archetypes!
-      @archetypes = []
-      current_mask = @component_mask
-      
-      while current_mask != 0
-        @archetypes << current_mask
-        current_mask = (current_mask - 1) & @component_mask
-      end
-    end
-
     def draw(&blk) 
       @draw_block = blk
     end
 
     def draw_override(ffi_draw)
-      @draw_block.call(ffi_draw) if @draw_block
+      instance_exec(ffi_draw, &@draw_block) if @draw_block
     end
   end
   
@@ -334,6 +324,18 @@ module Drecs
       end
     end
 
+    def with(*components)
+      query do 
+        with(*components)
+      end
+    end
+
+    def without(*components)
+      query do 
+        without(*components)
+      end
+    end
+
     def query(name = nil, &blk)
       if name
         @queries.find { _1.name == name }
@@ -423,6 +425,18 @@ module Drecs
         system.world = self
         @systems << system
         system
+      end
+    end
+
+    def <<(obj) 
+      entity do 
+        obj.each do |k, v|
+          if k == :draw 
+            draw(&v)
+          else 
+            component(k, v)
+          end
+        end
       end
     end
     
