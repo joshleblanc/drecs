@@ -1,138 +1,183 @@
-# Drecs
+# DrECS API Documentation
 
-Drecs is a teeny tiny barebones ecs implementation for [DragonRuby](https://dragonruby.org/toolkit/game)
+## Overview
 
-## Installation
+DrECS is a lightweight Entity Component System (ECS) framework for DragonRuby Game Toolkit. It provides a flexible architecture for organizing game objects and systems with a focus on performance and ergonomics.
 
-While there's no formal package manager for DragonRuby, you can use `$gtk.download_stb_rb("https://github.com/joshleblanc/drecs/blob/master/lib/drecs.rb")` to pull down the code into your project.
+## Core Concepts
 
-## Usage
+### Entity Component System (ECS)
 
-Simply `require "joshleblanc/drecs/drecs.rb"` at the top of your `main.rb`.
+DrECS follows the ECS architectural pattern:
 
-There are two ways of including Drecs in your project
+- **Entities** are game objects represented as containers for components
+- **Components** are pure data structures attached to entities
+- **Systems** contain logic that processes entities with specific component combinations
 
-* If you're not using a Game class, use `include Drecs::Main` to include everything at the top level
-* If you're using a Game class, use `include Drecs` in the class to include the appropriate class/instance methods
+## API Reference
 
-### Creating components
+### World
 
-Use the class method `component(name, **defaults)` to create components
-
-```ruby 
-component :exploded
-component :position, { x: 0, y: 0}
-component :size, { w: 0, h: 0}
-component :sprite, { path: nil },
-component :health, { amt: 100 }
-```
-
-### Creating entities
-
-Use the class method `entity(name, *components)` to create entities
+The central registry that manages entities, components, and systems.
 
 ```ruby
-entity :barrel, :health, :position, :size, :sprite
-```
-
-### Creating systems
-
-Use the class method `system(name, *filters, &blk)` to create systems
-
-System blocks are run within the `args` context. All top level `args` accessors are available to you, such as `state`, `outputs`, `inputs`, etc.
-
-```ruby
-system :render_sprites, :position, :size, :sprite do |entities| 
-    outputs.sprites << entities.map |e|
-        {
-            x: e.position.x,
-            y: e.position.y,
-            w: e.size.w,
-            h: e.size.h,
-            path: e.sprite.path
-        }
-    end
-end
-
-system :handle_death, :health do |entities|
-    entities.select { |e| e.health.amt <= 0 }.each do |e|
-        add_component(e, :exploded)
-    end
+# Create a new world
+world = Drecs.world do
+  # World configuration and setup here
 end
 ```
 
-### Creating worlds
+#### Methods
 
-Use the class method `world(name, components: [], systems: [])` to create worlds
+| Method | Description |
+|--------|-------------|
+| `entity(name = nil, &block)` | Creates a new entity or retrieves an existing one by name |
+| `system(name = nil, &block)` | Creates a new system or retrieves an existing one by name |
+| `tick(args)` | Updates all registered systems (called each frame) |
+| `query(name = nil, &block)` | Creates a query to filter entities |
+| `with(*components)` | Shorthand to create a query with specified components |
+| `without(*components)` | Shorthand to create a query excluding specified components |
+| `debug(bool = nil)` | Gets or sets debug mode |
+| `<<(hash)` | Shorthand to create an entity with components defined in a hash |
+
+### Entity
+
+Container for components that represent a game object.
 
 ```ruby
-world(:game, entities: [:barrel], systems: [:handle_death, :render_sprites])
+world.entity do
+  name :player
+  as :player  # Access via world.player
+  component :position, { x: 100, y: 100 }
+  component :velocity, { x: 0, y: 0 }
+end
 ```
 
-### Utilities
+#### Methods
 
-The following are utilities available at the instance level
+| Method | Description |
+|--------|-------------|
+| `component(key, data = nil)` | Add a component or update component data |
+| `add(...)` | Alias for component |
+| `remove(key)` | Remove a component |
+| `[](key)` | Get component data |
+| `has_components?(mask)` | Check if entity has the specified component mask |
+| `draw(&block)` | Define a custom draw function for the entity |
 
-`set_world(world)` is used to activate a world. This will populate the world with the default systems and entities defined on the world
+### System
 
-```ruby 
-def defaults(args)
-    return unless args.state.tick_count == 0
+Contains logic that processes entities with specific components.
 
-    set_world(:game)
+```ruby
+world.system do
+  name :movement_system
+  
+  query do
+    with :position, :velocity
+  end
+  
+  callback do |entity|
+    pos = entity.position
+    vel = entity.velocity
+    pos[:x] += vel[:x]
+    pos[:y] += vel[:y]
+  end
+end
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `query(&block)` | Define which entities this system should process |
+| `callback(&block)` | Define the logic to execute on matching entities |
+| `disable!` | Temporarily disable the system |
+| `enable!` | Re-enable a disabled system |
+| `disabled?` | Check if the system is disabled |
+
+### Query
+
+Filters entities based on component requirements.
+
+```ruby
+# Create a standalone query
+query = world.query do
+  with :position, :velocity
+  without :static
+end
+
+# Process matching entities
+query.each do |entity|
+  # Process entity
+end
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `with(*components)` | Specify required components |
+| `without(*components)` | Specify excluded components |
+| `commit` | Finalize the query and build the entity cache |
+| `each(&block)` | Iterate through matching entities |
+| `to_a` | Get array of matching entities |
+| `job(batch_size = 4, &block)` | Process entities in parallel batches |
+| `raw(&block)` | Access the raw entity cache array |
+
+
+
+
+## Debugging
+
+```ruby
+# Enable debug mode to see performance metrics
+world.debug(true)
+
+# Use benchmark utility
+world.b("Operation label") do
+  # Code to benchmark
+end
+```
+
+## Example Usage
+
+```ruby
+game = Drecs.world do
+  # Create systems
+  system do
+    name :movement
+    query { with :position, :velocity }
+    callback do |entity|
+      entity.position[:x] += entity.velocity[:x]
+      entity.position[:y] += entity.velocity[:y]
+    end
+  end
+  
+  system do
+    name :render
+    query { with :position, :sprite }
+    callback do |entity|
+      $args.outputs.sprites << {
+        x: entity.position[:x],
+        y: entity.position[:y],
+        w: entity.sprite[:w],
+        h: entity.sprite[:h],
+        path: entity.sprite[:path]
+      }
+    end
+  end
+  
+  # Create entities
+  entity do
+    name :player
+    as :player
+    component :position, { x: 100, y: 100 }
+    component :velocity, { x: 1, y: 0 }
+    component :sprite, { w: 32, h: 32, path: 'sprites/player.png' }
+  end
 end
 
 def tick(args)
-    defaults(args)
-    process_systems(args)
+  # Update all systems
+  game.tick(args)
 end
-```
-
-`process_systems(args)` is used to run the game - this should be called from the tick method
-
-```ruby 
-def tick(args)
-    process_systems(args)
-end
-```
-
-`add_component(entity, component)` is used to add a component to an entity
-
-`remove_component(entity, component)` is used to remove a component from an entity
-
-`has_components?(entity, *components)` will return true if the entity contains all of the provided components
-
-`create_entity(entity_type, **overrides)` will create an entity of the specified type, merging the overrides with the defaults. The created entity entity will automatically be added to `state.entities`. If the `:as` override is provided, the entity will also be added to `state` directly.
-
-```ruby
-system :example do 
-    create_entity(:barrel, as: :primary)
-
-    state.entities.select { |e| e.entity_type == :barrel }.count # => 1
-    state.primary # => the barrel
-end
-```
-
-`delete_entity(entity)` will delete the entity from `state.entities`, as well as remove the alias from `state`, if applicable
-
-`add_system(system)` will add a system to the currently active world
-
-`remove_system(system)` will remove a system from the currently active world
-
-## Development
-
-Samples are available in the samples directory. We use [drakkon](https://gitlab.com/dragon-ruby/drakkon) to manage the DragonRuby version. With drakkon installed, use `drakkon run` to run the sample.
-
-The drecs library is copied into the `lib` folder of the samples. You can create a Junction with the main lib folder on windows using `New-Item -ItemType Junction -Path lib -Target ..\..\lib` from within the sample app directory. This will let you modify drecs.rb in one place.
-
-## Contributing
-
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/drecs. This project is intended to be a safe, welcoming space for collaboration, and contributors are expected to adhere to the [code of conduct](https://github.com/[USERNAME]/drecs/blob/master/CODE_OF_CONDUCT.md).
-
-## License
-
-The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
-
-## Code of Conduct
-
-Everyone interacting in the Drecs project's codebases, issue trackers, chat rooms and mailing lists is expected to follow the [code of conduct](https://github.com/[USERNAME]/drecs/blob/master/CODE_OF_CONDUCT.md).
