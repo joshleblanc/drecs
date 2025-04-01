@@ -10,9 +10,10 @@ module Drecs
     prop :name
 
     def initialize
+      @queries = []
       @entities = []
       @systems = []
-      @queries = []
+
 
       @component_bits = {}
       @next_component_bit = 0
@@ -119,19 +120,15 @@ module Drecs
 
     def tick(args)
       self.args = args
-      i = 0
-      sl = @systems.length
-      while i < sl do 
-        unless @systems[i].disabled?
-          if @debug 
-            b("System: #{@systems[i].name}") do
-              _tick(@systems[i], args)
-            end
-          else
-            _tick(@systems[i], args)
+      @systems.each do |system|
+        next if system.disabled?
+        if @debug 
+          b("System: #{system.name}") do
+            _tick(system, args)
           end
+        else
+          _tick(system, args)
         end
-        i += 1
       end
     end
 
@@ -151,8 +148,7 @@ module Drecs
       else 
         # Check if name is a System class
         if name.is_a?(Class) && name < System
-          system = name.new
-          system.world = self
+          system = name.new(world: self)
           @systems << system
           return system
         else
@@ -185,11 +181,10 @@ module Drecs
     end
     
     # Create or retrieve an entity
-    def entity(name = nil, &blk)
+    def entity(name = nil, overrides = {}, &blk)
       if name.is_a?(Class) && name < Entity
         # Create an instance of the Entity subclass
-        entity = name.new
-        entity.world = self
+        entity = name.new(**overrides, world: self)
         entity._id = GTK.create_uuid
         @entities << entity
         notify_component_change(entity, 0, entity.component_mask)
@@ -199,8 +194,7 @@ module Drecs
         @entities.find { _1.name == name }
       else 
         # Legacy approach with instance_eval
-        entity = Entity.new
-        entity.world = self
+        entity = Entity.new(world: self)
         entity.tap { _1.instance_eval(&blk) } if blk
         entity._id = GTK.create_uuid
         define_singleton_method(entity.as) { entity } if entity.as          

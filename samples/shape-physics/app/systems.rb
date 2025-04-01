@@ -5,14 +5,9 @@
 class MovementSystem < Drecs::System
   with Position, Velocity
   
-  def initialize
-    super("MovementSystem")
-    
-    process do |entity|
-      # Update position based on velocity
-      entity.position.x += entity.velocity.dx
-      entity.position.y += entity.velocity.dy
-    end
+  def each(entity)
+    entity.position.x += entity.velocity.dx
+    entity.position.y += entity.velocity.dy
   end
 end
 
@@ -20,32 +15,28 @@ end
 class BoundarySystem < Drecs::System
   with Position, Velocity, Shape
   
-  def initialize
-    super("BoundarySystem")
+  def each(entity)
+    pos = entity.position
+    vel = entity.velocity
+    half_width = entity.shape.width / 2
+    half_height = entity.shape.height / 2
+      
+    # Check X boundaries
+    if pos.x - half_width < 0
+      pos.x = half_width
+      vel.dx = -vel.dx if entity.collider&.bouncy
+    elsif pos.x + half_width > 1280
+      pos.x = 1280 - half_width
+      vel.dx = -vel.dx if entity.collider&.bouncy
+    end
     
-    process do |entity|
-      pos = entity.position
-      vel = entity.velocity
-      half_width = entity.shape.width / 2
-      half_height = entity.shape.height / 2
-      
-      # Check X boundaries
-      if pos.x - half_width < 0
-        pos.x = half_width
-        vel.dx = -vel.dx if entity.collider&.bouncy
-      elsif pos.x + half_width > 1280
-        pos.x = 1280 - half_width
-        vel.dx = -vel.dx if entity.collider&.bouncy
-      end
-      
-      # Check Y boundaries
-      if pos.y - half_height < 0
-        pos.y = half_height
-        vel.dy = -vel.dy if entity.collider&.bouncy
-      elsif pos.y + half_height > 720
-        pos.y = 720 - half_height
-        vel.dy = -vel.dy if entity.collider&.bouncy
-      end
+    # Check Y boundaries
+    if pos.y - half_height < 0
+      pos.y = half_height
+      vel.dy = -vel.dy if entity.collider&.bouncy
+    elsif pos.y + half_height > 720
+      pos.y = 720 - half_height
+      vel.dy = -vel.dy if entity.collider&.bouncy
     end
   end
 end
@@ -54,26 +45,22 @@ end
 class PlayerControlSystem < Drecs::System
   with Position, Velocity, Player
   
-  def initialize
-    super("PlayerControlSystem")
-    
-    process do |entity|
-      # Skip if no keyboard input is available
-      next unless world.args.inputs.keyboard
+  def each(entity)
+    # Skip if no keyboard input is available
+    next unless world.args.inputs.keyboard
       
-      vel = entity.velocity
-      speed = entity.player.speed
+    vel = entity.velocity
+    speed = entity.player.speed
       
-      # Reset velocity first
-      vel.dx = 0
-      vel.dy = 0
+    # Reset velocity first
+    vel.dx = 0
+    vel.dy = 0
       
-      # Apply movement based on keypresses
-      vel.dx -= speed if world.args.inputs.keyboard.key_held.a || world.args.inputs.keyboard.key_held.left
-      vel.dx += speed if world.args.inputs.keyboard.key_held.d || world.args.inputs.keyboard.key_held.right
-      vel.dy -= speed if world.args.inputs.keyboard.key_held.w || world.args.inputs.keyboard.key_held.up
-      vel.dy += speed if world.args.inputs.keyboard.key_held.s || world.args.inputs.keyboard.key_held.down
-    end
+    # Apply movement based on keypresses
+    vel.dx -= speed if world.args.inputs.keyboard.key_held.a || world.args.inputs.keyboard.key_held.left
+    vel.dx += speed if world.args.inputs.keyboard.key_held.d || world.args.inputs.keyboard.key_held.right
+    vel.dy -= speed if world.args.inputs.keyboard.key_held.w || world.args.inputs.keyboard.key_held.up
+    vel.dy += speed if world.args.inputs.keyboard.key_held.s || world.args.inputs.keyboard.key_held.down
   end
 end
 
@@ -81,31 +68,27 @@ end
 class CollisionSystem < Drecs::System
   with Position, Collider
   
-  def initialize
-    super("CollisionSystem")
-    
+  def each(entity)
     @particle_cooldown = 0
     
-    process do |entity|
-      # Get all other entities with Position and Collider
-      world.with(Position, Collider).each do |other|
-        # Skip checking against self
-        next if entity == other
+    # Get all other entities with Position and Collider
+    world.with(Position, Collider).each do |other|
+      # Skip checking against self
+      next if entity == other
+      
+      # Calculate distance between entities
+      dx = entity.position.x - other.position.x
+      dy = entity.position.y - other.position.y
+      distance = Math.sqrt(dx * dx + dy * dy)
         
-        # Calculate distance between entities
-        dx = entity.position.x - other.position.x
-        dy = entity.position.y - other.position.y
-        distance = Math.sqrt(dx * dx + dy * dy)
-        
-        # Check if colliding
-        min_distance = entity.collider.radius + other.collider.radius
-        if distance < min_distance
-          # Handle collision
-          if entity.velocity && other.velocity
-            # Only handle collision once (from one entity's perspective)
-            if entity._id < other._id
-              handle_collision(entity, other, dx, dy, distance)
-            end
+      # Check if colliding
+      min_distance = entity.collider.radius + other.collider.radius
+      if distance < min_distance
+        # Handle collision
+        if entity.velocity && other.velocity
+          # Only handle collision once (from one entity's perspective)
+          if entity._id < other._id
+            handle_collision(entity, other, dx, dy, distance)
           end
         end
       end
@@ -162,40 +145,23 @@ end
 class RenderSystem < Drecs::System
   with Position, Shape
   
-  def initialize
-    super("RenderSystem")
-    
-    process do |entity|
-      pos = entity.position
-      shape = entity.shape
+  def each(entity)
+    pos = entity.position
+    shape = entity.shape
       
-      primitive = case shape.type
-      when :circle
-        {
-          x: pos.x, 
-          y: pos.y,
-          radius: shape.width / 2,
-          primitive_marker: :circle,
-          r: shape.color[0],
-          g: shape.color[1],
-          b: shape.color[2]
-        }
-      when :square
-        {
-          x: pos.x - shape.width / 2, 
-          y: pos.y - shape.height / 2,
-          w: shape.width,
-          h: shape.height,
-          primitive_marker: :solid,
-          r: shape.color[0],
-          g: shape.color[1],
-          b: shape.color[2]
-        }
-      end
+    primitive = {
+      x: pos.x - shape.width / 2, 
+      y: pos.y - shape.height / 2,
+      w: shape.width,
+      h: shape.height,
+      primitive_marker: :solid,
+      r: shape.color[0],
+      g: shape.color[1],
+      b: shape.color[2]
+    }
       
-      # Add to outputs
-      world.args.outputs.primitives << primitive if primitive
-    end
+    # Add to outputs
+    world.args.outputs.primitives << primitive if primitive
   end
 end
 
@@ -203,35 +169,14 @@ end
 class LifetimeSystem < Drecs::System
   with Lifetime
   
-  def initialize
-    super("LifetimeSystem")
-    
-    # Store entities to be removed
-    @entities_to_remove = []
-    
-    process do |entity|
-      # Calculate how long the entity has existed
-      current_time = Kernel.tick_count
-      age = current_time - entity.lifetime.created_at
+  def each(entity)
+    # Calculate how long the entity has existed
+    current_time = Kernel.tick_count
+    age = current_time - entity.lifetime.created_at
       
-      # Mark for removal if exceeded duration
-      if age >= entity.lifetime.duration
-        @entities_to_remove << entity
-      end
+    # Mark for removal if exceeded duration
+    if age >= entity.lifetime.duration
+      world.entities.delete(entity)
     end
-  end
-  
-  def execute(args)
-    super(args)
-    
-    # Remove expired entities
-    @entities_to_remove.each do |entity|
-      # Find entity in world entities and remove it
-      idx = world.entities.index(entity)
-      world.entities.delete_at(idx) if idx
-    end
-    
-    # Clear the removal list
-    @entities_to_remove.clear
   end
 end

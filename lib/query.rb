@@ -92,13 +92,13 @@ module Drecs
       @committed = true
 
       with = if @has_archetype
-        Array.select(world.entities) { |e| e.has_components?(@has_archetype) }
+        world.entities.select { |e| e.has_components?(@has_archetype) }
       else 
         []
       end
       
       without = if @not_archetype
-        Array.select(world.entities) { |e| e.has_components?(@not_archetype) }
+        world.entities.select { |e| e.has_components?(@not_archetype) }
       else 
         []
       end

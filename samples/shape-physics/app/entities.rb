@@ -2,6 +2,7 @@
 # These demonstrate the new class-based Entity API
 
 # PlayerCircle is a player-controlled circle that can collide with other objects
+
 class PlayerCircle < Drecs::Entity
   component Position, x: 400, y: 300
   component Velocity, dx: 0, dy: 0

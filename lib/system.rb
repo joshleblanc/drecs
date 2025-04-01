@@ -4,7 +4,13 @@ module Drecs
 
     # Class methods for System subclasses
     class << self
-      attr_reader :required_components, :excluded_components
+      def required_components 
+        @required_components ||= []
+      end
+
+      def excluded_components 
+        @excluded_components ||= []
+      end
       
       def inherited(subclass)
         subclass.instance_variable_set(:@required_components, [])
@@ -13,30 +19,30 @@ module Drecs
       
       # Define required components for the system
       def with(*components)
-        @required_components ||= []
-        @required_components.push(*components)
+        required_components.push(*components)
       end
       
       # Define excluded components for the system
       def without(*components)
-        @excluded_components ||= []
-        @excluded_components.push(*components)
+        excluded_components.push(*components)
       end
     end
 
     attr_reader :query, :callback    
     attr_accessor :world
 
-    def initialize(name = nil)
+    def initialize(name = nil, world:)
       @name = name 
       @disabled = false
-      
-      # Set up the query based on class-defined components if available
-      if self.class.required_components.any? || self.class.excluded_components.any?
-        @query = proc do
-          with(*self.class.required_components) if self.class.required_components.any?
-          without(*self.class.excluded_components) if self.class.excluded_components.any?
-        end
+      @query = Query.new
+      @world = world
+
+      self.class.required_components.each do |component|
+        @query.with(component)
+      end
+
+      self.class.excluded_components.each do |component|
+        @query.without(component)
       end
     end
 
@@ -55,18 +61,17 @@ module Drecs
     def disabled?
       @disabled
     end
-    
-    # Process all matching entities
-    def process(&block)
-      @callback = block if block_given?
-    end
+
+    def raw(entities); end 
+    def each(entity); end
     
     # Execute this system (called by the world)
     def execute(args = nil)
       return if disabled?
+
       
       entities = if query 
-        world.query(&query)
+        query
       elsif self.class.required_components.any? || self.class.excluded_components.any?
         world.query do 
           with(*self.class.required_components) if self.class.required_components.any?
@@ -75,12 +80,15 @@ module Drecs
       else
         nil
       end
+
+      p entities
       
       if entities.nil?
         self.instance_exec(&@callback) if @callback
       else 
+        raw(entities)
         entities.each do |entity|
-          self.instance_exec(entity, &@callback) if @callback
+          each(entity)
         end
       end
     end

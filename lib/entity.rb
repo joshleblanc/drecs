@@ -18,9 +18,12 @@ module Drecs
           defaults: defaults
         }
         
-        # Define a component accessor method
-        define_method(component_class.component_name) do
+        define_method(component_class.component_name.downcase) do
           @components[component_class.component_name]
+        end
+
+        define_method("#{component_class.component_name.downcase}=") do |new_val|
+          @components[component_class.component_name] = new_value
         end
       end
     end
@@ -31,15 +34,16 @@ module Drecs
     prop :name
     prop :as
 
-    def initialize
+    def initialize(world:, **overrides)
       @components = {}
       @archetypes = []
       @component_mask = 0
+      @world = world
       
       # Add any components defined at the class level
       self.class.component_classes&.each do |name, config|
         component_class = config[:class]
-        defaults = config[:defaults]
+        defaults = overrides[component_class.component_name.to_sym] || config[:defaults]
         add_component(component_class, **defaults)
       end
     end
