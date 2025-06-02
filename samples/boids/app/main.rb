@@ -270,5 +270,4 @@ def tick(args)
   args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
   args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
   args.outputs.debug << "boids: #{BOIDS_COUNT}"
-
 end

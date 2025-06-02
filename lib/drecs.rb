@@ -21,12 +21,9 @@ module Drecs
   end
 end
 
-require_relative "world_box"
 require_relative "world"
 require_relative "entity"
 require_relative "query"
-require_relative "system"
-require_relative "component"
 
 module Drecs
   VERSION = "0.1.0"

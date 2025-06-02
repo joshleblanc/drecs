@@ -2,32 +2,6 @@ module Drecs
   class Entity
     include DSL
 
-    # Component class storage at the class level
-    class << self
-      attr_reader :component_classes
-      
-      def inherited(subclass)
-        subclass.instance_variable_set(:@component_classes, {})
-      end
-      
-      # Define component declarations at the class level
-      def component(component_class, **defaults)
-        @component_classes ||= {}
-        @component_classes[component_class.component_name] = {
-          class: component_class,
-          defaults: defaults
-        }
-        
-        define_method(component_class.component_name.downcase) do
-          @components[component_class.component_name]
-        end
-
-        define_method("#{component_class.component_name.downcase}=") do |new_val|
-          @components[component_class.component_name] = new_value
-        end
-      end
-    end
-
     attr_reader :components, :relationships
     attr_accessor :world, :_id, :archetypes, :component_mask
 
@@ -39,13 +13,6 @@ module Drecs
       @archetypes = []
       @component_mask = 0
       @world = world
-      
-      # Add any components defined at the class level
-      self.class.component_classes&.each do |name, config|
-        component_class = config[:class]
-        defaults = overrides[component_class.component_name.to_sym] || config[:defaults]
-        add_component(component_class, **defaults)
-      end
     end
     
     def [](key)

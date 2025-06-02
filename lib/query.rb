@@ -24,6 +24,10 @@ module Drecs
       @committed = false
     end
 
+    def length 
+      @entity_cache.length
+    end
+
     def react_to_mask_change(old_mask, new_mask, entity)
       if (@has_archetype & new_mask) == @has_archetype && (@has_archetype & old_mask) != @has_archetype
         @entity_cache << entity unless @entity_cache.include?(entity)
