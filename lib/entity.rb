@@ -51,21 +51,16 @@ module Drecs
 
     # For backward compatibility
     def component(key, data = nil)
-      if key.is_a?(Class) && key < Component
-        # Handle class-based component
-        add_component(key, **(data || {}))
-      else
-        # Legacy string/symbol key approach
-        old_mask = @component_mask
-        @components[key] = data
-        @component_mask |= world&.register_component(key) || 0
-        
-        if world && old_mask != @component_mask
-          world.notify_component_change(self, old_mask, @component_mask)
-        end
-        
-        define_singleton_method(key) { @components[key] } unless respond_to?(key)
+      old_mask = @component_mask
+      @components[key] = data
+      @component_mask |= world&.register_component(key) || 0
+      
+      if world && old_mask != @component_mask
+        world.notify_component_change(self, old_mask, @component_mask)
       end
+      
+      define_singleton_method(key) { @components[key] } unless respond_to?(key)
+      define_singleton_method("#{key}=", ->(value) { @components[key] = value }) unless respond_to?("#{key}=")
     end
 
     def has_components?(mask)

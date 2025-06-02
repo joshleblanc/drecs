@@ -120,6 +120,10 @@ module Drecs
       Array.each(@entity_cache, &blk)
     end
 
+    def find(&blk)
+      @entity_cache.find(&blk)
+    end
+
     def raw(&blk)
       blk.call(@entity_cache)
     end
