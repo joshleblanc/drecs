@@ -5,15 +5,13 @@ module Drecs
     COMPONENT_BITS = {}
 
     attr_gtk
-    attr_reader :entities, :systems, :archetypes, :queries
+    attr_reader :entities, :archetypes, :queries
 
     prop :name
 
     def initialize
       @queries = []
       @entities = []
-      @systems = []
-
 
       @component_bits = {}
       @next_component_bit = 0
@@ -93,45 +91,6 @@ module Drecs
       end
     end
 
-    def _tick(system, args)
-      if system.respond_to?(:execute)
-        # New class-based system
-        system.execute(args)
-      else
-        # Legacy system with callback
-        entities = if system.query 
-          query(&system.query)
-        else
-          nil
-        end
-        
-        if entities.nil?
-          system.instance_exec(&system.callback)
-        else 
-          i = 0 
-          c = entities.length
-          while i < c do
-            system.instance_exec(entities[i], &system.callback)
-            i += 1
-          end
-        end
-      end
-    end
-
-    def tick(args)
-      self.args = args
-      @systems.each do |system|
-        next if system.disabled?
-        if @debug 
-          b("System: #{system.name}") do
-            _tick(system, args)
-          end
-        else
-          _tick(system, args)
-        end
-      end
-    end
-
     def debug(bool = nil) 
       if bool.nil?
         @debug
@@ -140,32 +99,6 @@ module Drecs
       else
         @debug = false
       end
-    end
-
-    def system(name = nil, &blk)
-      if name 
-        @systems.find { _1.name == name }
-      else 
-        # Check if name is a System class
-        if name.is_a?(Class) && name < System
-          system = name.new(world: self)
-          @systems << system
-          return system
-        else
-          # Legacy approach with instance_eval
-          system = System.new.tap { _1.instance_eval(&blk) }
-          system.world = self
-          @systems << system
-          system
-        end
-      end
-    end
-
-    # Add a system class instance
-    def add_system(system_instance)
-      system_instance.world = self
-      @systems << system_instance
-      system_instance
     end
 
     def <<(obj) 
@@ -182,14 +115,7 @@ module Drecs
     
     # Create or retrieve an entity
     def entity(name = nil, overrides = {}, &blk)
-      if name.is_a?(Class) && name < Entity
-        # Create an instance of the Entity subclass
-        entity = name.new(**overrides, world: self)
-        entity._id = GTK.create_uuid
-        @entities << entity
-        notify_component_change(entity, 0, entity.component_mask)
-        return entity
-      elsif name 
+      if name 
         # Find an entity by name
         @entities.find { _1.name == name }
       else 

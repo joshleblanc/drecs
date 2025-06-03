@@ -49,6 +49,14 @@ module Drecs
       end
     end
 
+    def method_missing(name, *args, &blk)
+      if name.to_s.end_with?('=')
+        component(name.to_s[0..-2], *args, &blk)
+      else
+        super
+      end
+    end
+
     # For backward compatibility
     def component(key, data = nil)
       old_mask = @component_mask
