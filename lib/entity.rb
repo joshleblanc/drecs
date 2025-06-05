@@ -52,8 +52,10 @@ module Drecs
     def method_missing(name, *args, &blk)
       if name.to_s.end_with?('=')
         component(name.to_s[0..-2], *args, &blk)
+      elsif respond_to?(name)
+        send(name, *args, &blk)
       else
-        super
+        nil
       end
     end
 

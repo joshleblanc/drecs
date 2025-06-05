@@ -1,6 +1,6 @@
 # Drecs
 
-Drecs is a teeny tiny barebones ecs implementation for [DragonRuby](https://dragonruby.org/toolkit/game)
+Drecs is a teeny tiny barebones ECS (Entity Component System) implementation for [DragonRuby](https://dragonruby.org/toolkit/game)
 
 ## Installation
 
@@ -10,114 +10,150 @@ While there's no formal package manager for DragonRuby, you can use `$gtk.downlo
 
 Simply `require "joshleblanc/drecs/drecs.rb"` at the top of your `main.rb`.
 
-There are two ways of including Drecs in your project
+### Creating a World
 
-* If you're not using a Game class, use `include Drecs::Main` to include everything at the top level
-* If you're using a Game class, use `include Drecs` in the class to include the appropriate class/instance methods
-
-### Creating components
-
-Use the class method `component(name, **defaults)` to create components
-
-```ruby 
-component :exploded
-component :position, { x: 0, y: 0}
-component :size, { w: 0, h: 0}
-component :sprite, { path: nil },
-component :health, { amt: 100 }
-```
-
-### Creating entities
-
-Use the class method `entity(name, *components)` to create entities
+The world is the central container for all entities, components, and queries.
 
 ```ruby
-entity :barrel, :health, :position, :size, :sprite
+require 'drecs.rb'
+
+# Create a world using a block
+world = Drecs.world do
+  # Optional: give your world a name
+  name :game_world
+  
+  # Configure debug mode (default: false)
+  debug true
+end
 ```
 
-### Creating systems
+### Creating and Managing Entities
 
-Use the class method `system(name, *filters, &blk)` to create systems
-
-System blocks are run within the `args` context. All top level `args` accessors are available to you, such as `state`, `outputs`, `inputs`, etc.
+Entities are containers for components. Each entity has a unique ID.
 
 ```ruby
-system :render_sprites, :position, :size, :sprite do |entities| 
-    outputs.sprites << entities.map |e|
-        {
-            x: e.position.x,
-            y: e.position.y,
-            w: e.size.w,
-            h: e.size.h,
-            path: e.sprite.path
-        }
-    end
+# Create an entity with components
+entity = world.entity do
+  # Name the entity (optional)
+  name :player
+  
+  # Make the entity accessible via world.player (optional)
+  as :player
+  
+  # Add components directly
+  component :position, { x: 100, y: 100 }
+  component :velocity, { x: 0, y: 0 }
+  component :size, { width: 32, height: 32 }
 end
 
-system :handle_death, :health do |entities|
-    entities.select { |e| e.health.amt <= 0 }.each do |e|
-        add_component(e, :exploded)
-    end
-end
+# Adding components later
+entity.add_component(:health, amount: 100)
+
+# Or using the shorthand
+entity.add(:sprite, path: 'sprites/player.png')
+
+# Removing components
+entity.remove(:velocity)
+
+# Accessing components
+entity[:position] # => { x: 100, y: 100 }
+
+# Components are also accessible as methods
+entity.position # => { x: 100, y: 100 }
+
+# Finding entities by name
+player = world.entity(:player)
 ```
 
-### Creating worlds
+### Adding Entities Using Hash Syntax
 
-Use the class method `world(name, components: [], systems: [])` to create worlds
+You can also add entities using a hash syntax:
 
 ```ruby
-world(:game, entities: [:barrel], systems: [:handle_death, :render_sprites])
+# Add an entity with components in a single operation
+world << {
+  position: { x: 200, y: 200 },
+  size: { width: 64, height: 64 },
+  sprite: { path: 'sprites/enemy.png' },
+  # Special draw component that takes a block
+  draw: ->(ffi_draw) {
+    ffi_draw.sprite(x: 200, y: 200, w: 64, h: 64, path: 'sprites/enemy.png')
+  }
+}
 ```
 
-### Utilities
+### Querying Entities
 
-The following are utilities available at the instance level
-
-`set_world(world)` is used to activate a world. This will populate the world with the default systems and entities defined on the world
-
-```ruby 
-def defaults(args)
-    return unless args.state.tick_count == 0
-
-    set_world(:game)
-end
-
-def tick(args)
-    defaults(args)
-    process_systems(args)
-end
-```
-
-`process_systems(args)` is used to run the game - this should be called from the tick method
-
-```ruby 
-def tick(args)
-    process_systems(args)
-end
-```
-
-`add_component(entity, component)` is used to add a component to an entity
-
-`remove_component(entity, component)` is used to remove a component from an entity
-
-`has_components?(entity, *components)` will return true if the entity contains all of the provided components
-
-`create_entity(entity_type, **overrides)` will create an entity of the specified type, merging the overrides with the defaults. The created entity entity will automatically be added to `state.entities`. If the `:as` override is provided, the entity will also be added to `state` directly.
+Queries let you find entities with specific component combinations.
 
 ```ruby
-system :example do 
-    create_entity(:barrel, as: :primary)
+# Query for entities with specific components
+movables = world.with(:position, :velocity)
 
-    state.entities.select { |e| e.entity_type == :barrel }.count # => 1
-    state.primary # => the barrel
+# Query for entities with some components but not others
+enemies = world.with(:position, :ai).without(:friendly)
+
+# More complex queries
+query = world.query do
+  with(:position, :sprite)
+  without(:hidden)
+  as :visible_sprites  # Makes the query accessible as world.visible_sprites
+end
+
+# Process query results
+query.each do |entity|
+  # Do something with each entity
+  puts entity.position.x, entity.position.y
+end
+
+# Convert query results to array
+entities_array = query.to_a
+
+# Find a specific entity in query results
+player = query.find { |e| e.name == :player }
+
+# Get raw access to the entity cache
+query.raw do |entities|
+  # Direct access to the entity array
+end
+
+# Get the count of matching entities
+query.count
+```
+
+### (WIP) Parallel Processing with Jobs
+
+Process entities in parallel using the job system:
+
+```ruby
+# Process entities in parallel (4 at a time by default)
+world.with(:physics).job do |entity|
+  # This block runs in a separate thread for each entity
+  update_physics(entity)
+end
+
+# Specify batch size
+world.with(:ai).job(batch_size: 8) do |entity|
+  # Process 8 entities concurrently
+  update_ai(entity)
 end
 ```
 
-`delete_entity(entity)` will delete the entity from `state.entities`, as well as remove the alias from `state`, if applicable
+### Performance Measurement
 
-`add_system(system)` will add a system to the currently active world
+```ruby
+# Benchmark a block of code
+world.b('Update physics') do
+  # Code to benchmark
+  update_physics_system()
+end
 
-`remove_system(system)` will remove a system from the currently active world
+# Benchmark with allocation tracking
+world.b('Entity creation', allocations: true) do
+  # Track memory allocations in this block
+  create_many_entities()
+end
+```
 
 ## Development
 

@@ -28,6 +28,10 @@ module Drecs
       @entity_cache.length
     end
 
+    def count 
+      @entity_cache.count
+    end
+
     def react_to_mask_change(old_mask, new_mask, entity)
       if (@has_archetype & new_mask) == @has_archetype && (@has_archetype & old_mask) != @has_archetype
         @entity_cache << entity unless @entity_cache.include?(entity)
