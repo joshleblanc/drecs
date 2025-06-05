@@ -4,18 +4,22 @@ Drecs is a teeny tiny barebones ECS (Entity Component System) implementation for
 
 ## Installation
 
-While there's no formal package manager for DragonRuby, you can use `$gtk.download_stb_rb("https://github.com/joshleblanc/drecs/blob/master/lib/drecs.rb")` to pull down the code into your project.
+While there's no formal package manager for DragonRuby, you can use clone the project into your `lib` folder to pull down the code into your project.
+
+```
+git clone https://github.com/joshleblanc/drecs.git lib/drecs
+```
 
 ## Usage
 
-Simply `require "joshleblanc/drecs/drecs.rb"` at the top of your `main.rb`.
+Simply `require "lib/drecs/lib/drecs.rb"` at the top of your `main.rb`.
 
 ### Creating a World
 
 The world is the central container for all entities, components, and queries.
 
 ```ruby
-require 'drecs.rb'
+require 'lib/drecs/lib/drecs.rb'
 
 # Create a world using a block
 world = Drecs.world do
@@ -44,6 +48,14 @@ entity = world.entity do
   component :position, { x: 100, y: 100 }
   component :velocity, { x: 0, y: 0 }
   component :size, { width: 32, height: 32 }
+
+  # A no argument component is a tag
+  component :friendly
+
+  # Special helper that hooks directly into draw_override
+  draw do |ffi_draw|
+    ffi_draw.sprite(x: position.x, y: position.y, w: size.width, h: size.height)
+  end
 end
 
 # Adding components later
@@ -75,6 +87,8 @@ world << {
   position: { x: 200, y: 200 },
   size: { width: 64, height: 64 },
   sprite: { path: 'sprites/enemy.png' },
+  # A no argument component is a tag
+  friendly: nil,
   # Special draw component that takes a block
   draw: ->(ffi_draw) {
     ffi_draw.sprite(x: 200, y: 200, w: 64, h: 64, path: 'sprites/enemy.png')

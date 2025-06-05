@@ -20,23 +20,11 @@ module Drecs
     end
 
     def add(...)
-      add_component(...)
+      component(...)
     end
 
-    def add_component(component_class, **data)
-      component_name = component_class.component_name
-      old_mask = @component_mask
-      
-      # Create the component instance and store it
-      component_instance = component_class.new(self, **data)
-      @components[component_name] = component_instance
-      @component_mask |= world&.register_component(component_name) || 0
-      
-      if world && old_mask != @component_mask
-        world.notify_component_change(self, old_mask, @component_mask)
-      end
-      
-      component_instance
+    def add_component(...)
+      component(...)
     end
 
     def remove(key)
@@ -49,6 +37,10 @@ module Drecs
       end
     end
 
+    def remove_component(key)
+      remove(key)
+    end
+
     def method_missing(name, *args, &blk)
       if name.to_s.end_with?('=')
         component(name.to_s[0..-2], *args, &blk)
@@ -59,7 +51,6 @@ module Drecs
       end
     end
 
-    # For backward compatibility
     def component(key, data = nil)
       old_mask = @component_mask
       @components[key] = data
