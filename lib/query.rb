@@ -124,6 +124,10 @@ module Drecs
       Array.each(@entity_cache, &blk)
     end
 
+    def map&blk
+      Array.map(@entity_cache, &blk)
+    end
+
     def find(&blk)
       @entity_cache.find(&blk)
     end

@@ -101,11 +101,38 @@ module Drecs
       end
     end
 
+    def delete(entity)
+      entities = if entity.is_a? Entity 
+        [entity]
+      elsif entity.is_a? Query 
+        entity.to_a 
+      else
+        entity 
+      end
+      Array.each(entities) do |entity|
+        @entities.delete(entity)
+        notify_component_change(entity, entity.component_mask, 0)
+        entity.singleton_class.undef_method(entity.as) if entity.as
+      end
+    end
+
+    def method_missing(method_name, *args, &blk)
+      if respond_to?(method_name)
+        send(method_name, *args, &blk)
+      else
+        nil
+      end
+    end
+
     def <<(obj) 
       entity do 
         obj.each do |k, v|
           if k == :draw 
             draw(&v)
+          elsif k == :as
+            as(v)
+          elsif k == :name
+            name(v)
           else 
             component(k, v)
           end
