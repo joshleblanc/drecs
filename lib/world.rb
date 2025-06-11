@@ -112,7 +112,7 @@ module Drecs
       Array.each(entities) do |entity|
         @entities.delete(entity)
         notify_component_change(entity, entity.component_mask, 0)
-        entity.singleton_class.undef_method(entity.as) if entity.as
+        self.singleton_class.undef_method(entity.as) if entity.as && self.respond_to?(entity.as)
       end
     end
 
