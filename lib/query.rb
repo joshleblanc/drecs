@@ -20,6 +20,7 @@ module Drecs
       @not_archetype = nil
       
       @entity_cache = []
+      @entity_hash = {}  # Fast lookup for duplicates using Hash instead of Set
       
       @committed = false
     end
@@ -34,16 +35,28 @@ module Drecs
 
     def react_to_mask_change(old_mask, new_mask, entity)
       if (@has_archetype & new_mask) == @has_archetype && (@has_archetype & old_mask) != @has_archetype
-        @entity_cache << entity unless @entity_cache.include?(entity)
+        unless @entity_hash[entity._id]
+          @entity_cache << entity
+          @entity_hash[entity._id] = true
+        end
       elsif (@has_archetype & old_mask) == @has_archetype && (@has_archetype & new_mask) != @has_archetype
-        @entity_cache.delete(entity)
+        if @entity_hash[entity._id]
+          @entity_cache.delete(entity)
+          @entity_hash.delete(entity._id)
+        end
       end
 
       if @not_archetype
         if (@not_archetype & new_mask) == @not_archetype
-          @entity_cache.delete(entity)
+          if @entity_hash[entity._id]
+            @entity_cache.delete(entity)
+            @entity_hash.delete(entity._id)
+          end
         elsif (@not_archetype & old_mask) == @not_archetype && (@not_archetype & new_mask) != @not_archetype
-          @entity_cache << entity unless @entity_cache.include?(entity)
+          unless @entity_hash[entity._id]
+            @entity_cache << entity
+            @entity_hash[entity._id] = true
+          end
         end
       end
     end
@@ -99,19 +112,21 @@ module Drecs
 
       @committed = true
 
-      with = if @has_archetype
-        world.entities.select { |e| e.has_components?(@has_archetype) }
-      else 
-        []
-      end
+      # Use faster iteration instead of select + array subtraction
+      @entity_cache.clear
+      @entity_hash.clear
       
-      without = if @not_archetype
-        world.entities.select { |e| e.has_components?(@not_archetype) }
-      else 
-        []
+      if @has_archetype
+        Array.each(world.entities) do |entity|
+          if entity.has_components?(@has_archetype)
+            # Check exclusion condition
+            if @not_archetype.nil? || !entity.has_components?(@not_archetype)
+              @entity_cache << entity
+              @entity_hash[entity] = true
+            end
+          end
+        end
       end
-
-      @entity_cache = with - without
 
       self
     end
