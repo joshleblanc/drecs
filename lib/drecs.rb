@@ -86,6 +86,26 @@ module Drecs
       
       entity_id
     end
+
+    def destroy(*entity_ids) 
+      entity_ids.each do |entity_id|
+        location = @entity_locations[entity_id]
+        next unless location
+
+        archetype = location[:archetype]
+        
+        # Remove the entity and capture if another entity was moved to fill the hole
+        removed_row = location[:row]
+        moved_entity_id = archetype.remove(removed_row)
+
+        # If another entity was moved into this row, update its recorded row index
+        if moved_entity_id && moved_entity_id != entity_id
+          @entity_locations[moved_entity_id][:row] = removed_row
+        end
+        @entity_manager.destroy_entity(entity_id)
+        @entity_locations.delete(entity_id)
+      end
+    end
     
     # Adds a component to an existing entity. This triggers a move between archetypes.
     def add_component(entity_id, component)
@@ -161,15 +181,6 @@ module Drecs
         next unless stores.first && !stores.first.empty?
         yield(*stores, archetype.entity_ids)
       end
-    end
-    
-    def register_system(system)
-      @systems << system
-    end
-
-    # The main game loop tick.
-    def tick
-      @systems.each { |s| s.update(self) }
     end
 
     private
