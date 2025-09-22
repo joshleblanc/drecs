@@ -3,19 +3,19 @@ RESOLUTION = {
   h: 720
 }
 
-BOIDS_COUNT = 3000
+BOIDS_COUNT = 750
 
 SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 1.0
 COHESION_WEIGHT = 1.0
 
-BOUNCE = false
+BOUNCE = true
 
 MOVEMENT_ACCURACY = 2
 
 NEIGHBOUR_RANGE = 10
 MIN_VELOCITY = 2
-MAX_VELOCITY = 10
+MAX_VELOCITY = 5
 
 GRID_CELL_SIZE = NEIGHBOUR_RANGE
 GRID_POS_FACTOR = 1.0 / GRID_CELL_SIZE
@@ -257,6 +257,14 @@ def tick(args)
         b: color.b,
         a: color.a
       }
+    end
+  end
+
+  if args.inputs.keyboard.key_down.space
+    args.state.entities.query(Position, Velocity, Size, Color) do |_, _, _, _, entity_ids|
+      id = entity_ids.sample
+      args.state.entities.remove_component(id, Color) if id
+      break # only remove one per keypress
     end
   end
 

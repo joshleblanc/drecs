@@ -117,15 +117,49 @@ module Drecs
       end
     end
 
+    # Removes a component from an existing entity. This triggers a move between archetypes.
+    def remove_component(entity_id, component_class)
+      location = @entity_locations[entity_id]
+      return unless location # Entity doesn't exist
+
+      old_archetype = location[:archetype]
+
+      # 1. Gather all current components for the entity
+      all_components = old_archetype.component_classes.to_h do |klass|
+        [klass, old_archetype.component_stores[klass][location[:row]]]
+      end
+
+      # If the entity doesn't have the component, nothing to do
+      return unless all_components.key?(component_class)
+
+      # 2. Remove the specified component and find/create the new archetype
+      all_components.delete(component_class)
+      new_signature = all_components.keys.sort_by(&:name)
+      new_archetype = find_or_create_archetype(new_signature)
+
+      # 3. Add entity data to the new archetype
+      new_row = new_archetype.add(entity_id, all_components)
+      @entity_locations[entity_id] = { archetype: new_archetype, row: new_row }
+
+      # 4. Remove the entity from the old archetype, filling the hole
+      moved_entity_id = old_archetype.remove(location[:row])
+
+      # 5. If another entity was moved to fill the hole, update its location
+      if moved_entity_id && moved_entity_id != entity_id
+        @entity_locations[moved_entity_id][:row] = location[:row]
+      end
+    end
+
     # The query interface for systems.
     def query(*component_classes)
       # Find all archetypes that contain *at least* the required components
       @archetypes.each_value do |archetype|
         next unless (component_classes - archetype.component_classes).empty?
         
-        # Yield the raw component arrays for high-speed iteration
+        # Yield the raw component arrays for high-speed iteration, plus entity_ids
         stores = component_classes.map { |klass| archetype.component_stores[klass] }
-        yield(*stores) if stores.first && !stores.first.empty?
+        next unless stores.first && !stores.first.empty?
+        yield(*stores, archetype.entity_ids)
       end
     end
     
