@@ -177,7 +177,10 @@ module Drecs
     end
 
     # The query interface for systems.
-    def query(*component_classes)
+    def query(*component_classes, &block)
+      # If no block is given, return an enumerator that will yield the same values.
+      return to_enum(:query, *component_classes) unless block_given?
+
       # Find all archetypes that contain *at least* the required components
       @archetypes.each_value do |archetype|
         next unless (component_classes - archetype.component_classes).empty?
