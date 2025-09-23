@@ -72,7 +72,6 @@ def tick(args)
         if Geometry.distance(pos, food_pos) < args.state.config[:food_detect_radius]
           vel.x = (food_pos.x - pos.x) * args.state.config[:food_target_influence]
           vel.y = (food_pos.y - pos.y) * args.state.config[:food_target_influence]
-          p vel
         end
 
         if Geometry.distance(pos, food_pos) < args.state.config[:pickup_radius]
@@ -103,6 +102,7 @@ def tick(args)
 
   # cap to max speed
   args.state.entities.query(Velocity) do |velocities|
+    p velocities
     velocities.each do |vel|
       speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y)
       if speed > args.state.config[:max_speed]
