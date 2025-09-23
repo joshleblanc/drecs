@@ -1,16 +1,17 @@
 Position = Struct.new(:x, :y)
 Velocity = Struct.new(:x, :y)
-Ant = Struct.new(:energy)
+Ant = Struct.new(:energy, :distance_traveled)
 Pheromone = Struct.new(:type, :strength)
 Nest = Struct.new("Nest")
 Foraging = Struct.new("Foraging")
 ReturningHome = Struct.new("ReturningHome")
+FollowingFoodTrail = Struct.new("FollowingFoodTrail")
 FoodSource = Struct.new(:quantity)
 CarryingFood = Struct.new("CarryingFood")
 Drawable = Struct.new(:r, :g, :b, :a, :w, :h)
 
-NUM_ANTS = 100
-NUM_FOOD_SOURCES = 5 
+NUM_ANTS = 1
+NUM_FOOD_SOURCES = 1 
 
 def boot(args)
     args.state.entities = Drecs::World.new
@@ -21,7 +22,7 @@ def boot(args)
     )
     NUM_ANTS.times do 
         args.state.entities.spawn(
-            Ant.new,
+            Ant.new(100, 0),
             Position.new(400, 300),
             Velocity.new(Numeric.rand(-1.0..1.0), Numeric.rand(-1.0..1.0)),
             Foraging.new,
@@ -37,11 +38,7 @@ def boot(args)
             Drawable.new(255, 0, 0, 255, 10, 10)
         )
 
-        args.state.entities.spawn(
-            Pheromone.new(:food, 500),
-            pos,
-            Drawable.new(0, 255, 255, 255, 10, 10)
-        )
+
     end 
 end
 
@@ -62,6 +59,16 @@ def tick(args)
   nest_positions = []
   args.state.entities.query(Nest, Position) do |nests, positions|
     nest_positions = positions.dup
+  end
+
+  # Cache home pheromones (position + strength) for this tick
+  home_pheromones = []
+  args.state.entities.query(Pheromone, Position) do |pheromones, positions|
+    pheromones.each_with_index do |ph, i|
+      if ph.type == :home
+        home_pheromones << { pos: positions[i], strength: ph.strength }
+      end
+    end
   end
 
   # Cache food pheromones (position + strength) for this tick
@@ -133,13 +140,7 @@ def tick(args)
         d2 = dx * dx + dy * dy
         next unless d2 < radius2
         dist = Math.sqrt(d2)
-        next if dist <= 0.0
-        # Weight increases with strength and decreases with distance
-        w = fp[:strength].to_f / (dist + 1.0)
-        sum_x += (dx / dist) * 1 #w
-        sum_y += (dy / dist) * 1 #w
-      end
-      # Apply the weighted attraction (scaled down if we already see food)
+        next if dist <= 1.0
       vx += pheromone_influence * pheromone_scale * sum_x
       vy += pheromone_influence * pheromone_scale * sum_y
 
@@ -153,6 +154,7 @@ def tick(args)
 
       vel.x = vx
       vel.y = vy
+      ant.distance_traveled += speed
 
       # If close enough to a food source, pick up food
       best_fs = nil
@@ -187,6 +189,20 @@ def tick(args)
       vx += Numeric.rand(-(jitter / 2.0)..(jitter / 2.0))
       vy += Numeric.rand(-(jitter / 2.0)..(jitter / 2.0))
 
+      # Attraction toward home pheromones: weighted by strength and proximity
+      sum_x = 0.0
+      sum_y = 0.0
+      radius2 = pheromone_attract_radius * pheromone_attract_radius
+        next if dist <= 1.0
+        # Weight increases with strength and decreases with distance
+        w = hp[:strength].to_f / (dist + 1.0)
+        sum_x += (dx / dist) * w
+        sum_y += (dy / dist) * w
+      end
+      # Apply the weighted attraction
+      vx += pheromone_influence * sum_x
+      vy += pheromone_influence * sum_y
+
       if nest_positions.any?
         nest_pos = nest_positions.first
         dx = nest_pos.x - pos.x
@@ -208,6 +224,7 @@ def tick(args)
 
       vel.x = vx
       vel.y = vy
+      ant.distance_traveled += speed
 
       # If close enough to the nest, drop food and resume foraging
       if nest_positions.any?
@@ -218,6 +235,59 @@ def tick(args)
           drop_actions << entity_ids[index]
         end
       end
+    end
+  end
+
+  args.state.entities.query(Ant, Position, Velocity, FollowingFoodTrail) do |ants, positions, velocities, _following, entity_ids|
+    ants.each_with_index do |ant, index|
+      pos = positions[index]
+      vel = velocities[index]
+
+      vx = vel.x
+      vy = vel.y
+
+      # Random jitter for wandering
+      vx += Numeric.rand(-jitter..jitter)
+      vy += Numeric.rand(-jitter..jitter)
+
+      # Attraction toward food pheromones: weighted by strength and proximity
+      sum_x = 0.0
+      sum_y = 0.0
+      radius2 = pheromone_attract_radius * pheromone_attract_radius
+      food_pheromones.each do |fp|
+        dx = fp[:pos].x - pos.x
+        dy = fp[:pos].y - pos.y
+        d2 = dx * dx + dy * dy
+        next unless d2 < radius2
+        dist = Math.sqrt(d2)
+        next if dist <= 1.0
+        # Weight increases with strength and decreases with distance
+        w = fp[:strength].to_f / (dist + 1.0)
+        sum_x += (dx / dist) * w
+        sum_y += (dy / dist) * w
+      end
+
+      if sum_x.zero? && sum_y.zero?
+        # No food pheromones found, switch back to foraging
+        args.state.entities.remove_component(entity_ids[index], FollowingFoodTrail)
+        args.state.entities.add_component(entity_ids[index], Foraging.new)
+      else
+        # Apply the weighted attraction
+        vx += pheromone_influence * sum_x
+        vy += pheromone_influence * sum_y
+      end
+
+      # Clamp to max speed
+      speed = Math.sqrt(vx * vx + vy * vy)
+      if speed > max_speed
+        scale = max_speed / speed
+        vx *= scale
+        vy *= scale
+      end
+
+      vel.x = vx
+      vel.y = vy
+      ant.distance_traveled += speed
     end
   end
 
@@ -235,7 +305,8 @@ def tick(args)
       # Switch ant state to ReturningHome and mark as CarryingFood
       world.add_component(ant_id, CarryingFood.new)
       world.add_component(ant_id, ReturningHome.new)
-      world.remove_component(ant_id, Foraging)
+      world.remove_component(ant_id, Foraging) if world.has_component?(ant_id, Foraging)
+      world.remove_component(ant_id, FollowingFoodTrail) if world.has_component?(ant_id, FollowingFoodTrail)
     end
     world.destroy(*to_destroy_food_ids) unless to_destroy_food_ids.empty?
   end
@@ -246,7 +317,7 @@ def tick(args)
     drop_actions.each do |ant_id|
       world.remove_component(ant_id, ReturningHome)
       world.remove_component(ant_id, CarryingFood)
-      world.add_component(ant_id, Foraging.new)
+      world.add_component(ant_id, FollowingFoodTrail.new)
     end
   end
 
@@ -268,27 +339,29 @@ def tick(args)
 
   # Foraging ants lay home pheromones to help guide the return path
   args.state.entities.query(Ant, Position, Foraging) do |ants, positions, _foraging, entity_ids|
-    next unless args.state.tick_count % 120 == 0 && args.state.tick_count > 0
-
-    positions.each_with_index do |position, i|
-      args.state.entities.spawn(
-        Pheromone.new(:home, 50),
-        Position.new(position.x, position.y),
-        Drawable.new(0, 255, 50, 255, 2, 2)
-      )
+    ants.each_with_index do |ant, i|
+      if ant.distance_traveled > 25
+        args.state.entities.spawn(
+          Pheromone.new(:home, 50),
+          Position.new(positions[i].x, positions[i].y),
+          Drawable.new(0, 255, 50, 255, 2, 2)
+        )
+        ant.distance_traveled = 0
+      end
     end
   end
 
   # Returning ants carrying food lay food pheromones to guide others to the source
   args.state.entities.query(Ant, Position, ReturningHome, CarryingFood) do |ants, positions, _returning, _carrying, entity_ids|
-    next unless args.state.tick_count % 120 == 0 && args.state.tick_count > 0
-
-    positions.each_with_index do |position, i|
-      args.state.entities.spawn(
-        Pheromone.new(:food, 50),
-        Position.new(position.x, position.y),
-        Drawable.new(50, 255, 255, 255, 2, 2)
-      )
+    ants.each_with_index do |ant, i|
+      if ant.distance_traveled > 25
+        args.state.entities.spawn(
+          Pheromone.new(:food, 50),
+          Position.new(positions[i].x, positions[i].y),
+          Drawable.new(50, 255, 255, 255, 2, 2)
+        )
+        ant.distance_traveled = 0
+      end
     end
   end
 

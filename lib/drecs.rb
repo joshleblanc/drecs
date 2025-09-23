@@ -170,6 +170,12 @@ module Drecs
       end
     end
 
+    def has_component?(entity_id, component_class)
+      location = @entity_locations[entity_id]
+      return false unless location
+      location[:archetype].component_classes.include?(component_class)
+    end
+
     # The query interface for systems.
     def query(*component_classes)
       # Find all archetypes that contain *at least* the required components
