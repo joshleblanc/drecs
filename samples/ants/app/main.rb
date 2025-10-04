@@ -154,112 +154,106 @@ def tick(args)
   end
 
   # Update ants
-  args.state.entities.query(Position, Velocity, Angle, AntState) do |entity_ids, positions, velocities, angles, states|
-    Array.each_with_index(positions) do |pos, i|
-      vel = velocities[i]
-      ant_angle = angles[i]
-      state = states[i]
+  args.state.entities.each_entity(Position, Velocity, Angle, AntState) do |entity_id, pos, vel, ant_angle, state|
+    if state.carrying_food
+      # Carrying food - follow "to home" pheromones and deposit "to food" pheromones
+      deposit_pheromone(to_food_grid, pos.x, pos.y, PHEROMONE_STRENGTH)
 
-      if state.carrying_food
-        # Carrying food - follow "to home" pheromones and deposit "to food" pheromones
-        deposit_pheromone(to_food_grid, pos.x, pos.y, PHEROMONE_STRENGTH)
-
-        # Check if reached nest
-        if pos.distance_to(nest_pos) < NEST_SIZE / 2
-          state.carrying_food = false
-          nest_component.food_stored += 1
-        else
-          # Follow to-home pheromones
-          forward = sense_pheromone(to_home_grid, pos.x, pos.y, 0, ant_angle.value)
-          left = sense_pheromone(to_home_grid, pos.x, pos.y, -ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
-          right = sense_pheromone(to_home_grid, pos.x, pos.y, ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
-
-          # Also add attraction to nest when close
-          to_nest_x = nest_pos.x - pos.x
-          to_nest_y = nest_pos.y - pos.y
-          to_nest_angle = Math.atan2(to_nest_y, to_nest_x)
-          angle_diff = to_nest_angle - ant_angle.value
-          angle_diff = (angle_diff + Math::PI) % (2 * Math::PI) - Math::PI
-
-          if left > forward && left > right
-            ant_angle.value -= ANT_TURN_SPEED
-          elsif right > forward && right > left
-            ant_angle.value += ANT_TURN_SPEED
-          else
-            ant_angle.value += (rand - 0.5) * ANT_WANDER_STRENGTH
-          end
-
-          # Bias toward nest when carrying food
-          ant_angle.value += angle_diff * 0.1
-        end
+      # Check if reached nest
+      if pos.distance_to(nest_pos) < NEST_SIZE / 2
+        state.carrying_food = false
+        nest_component.food_stored += 1
       else
-        # Searching for food - follow "to food" pheromones and deposit "to home" pheromones
-        deposit_pheromone(to_home_grid, pos.x, pos.y, PHEROMONE_STRENGTH)
+        # Follow to-home pheromones
+        forward = sense_pheromone(to_home_grid, pos.x, pos.y, 0, ant_angle.value)
+        left = sense_pheromone(to_home_grid, pos.x, pos.y, -ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
+        right = sense_pheromone(to_home_grid, pos.x, pos.y, ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
 
-        food_found = false
-        closest_food_dist = Float::INFINITY
-        closest_food_angle = nil
+        # Also add attraction to nest when close
+        to_nest_x = nest_pos.x - pos.x
+        to_nest_y = nest_pos.y - pos.y
+        to_nest_angle = Math.atan2(to_nest_y, to_nest_x)
+        angle_diff = to_nest_angle - ant_angle.value
+        angle_diff = (angle_diff + Math::PI) % (2 * Math::PI) - Math::PI
 
-        args.state.entities.each_entity(Position, FoodComponent) do |entity_id, food_pos, food_comp|
-          next if food_comp.amount <= 0
-
-          dist = pos.distance_to(food_pos)
-
-          # Check if can pickup food
-          if dist < FOOD_SIZE
-            state.carrying_food = true
-            food_comp.amount -= 1
-            food_found = true
-
-            # Destroy food source if empty
-            if food_comp.amount <= 0
-              args.state.entities.destroy(entity_id)
-            end
-            break
-          elsif dist < 50 && dist < closest_food_dist
-            # Track closest food for attraction
-            closest_food_dist = dist
-            to_food_x = food_pos.x - pos.x
-            to_food_y = food_pos.y - pos.y
-            closest_food_angle = Math.atan2(to_food_y, to_food_x)
-          end
+        if left > forward && left > right
+          ant_angle.value -= ANT_TURN_SPEED
+        elsif right > forward && right > left
+          ant_angle.value += ANT_TURN_SPEED
+        else
+          ant_angle.value += (rand - 0.5) * ANT_WANDER_STRENGTH
         end
 
-        unless food_found
-          # Follow to-food pheromones
-          forward = sense_pheromone(to_food_grid, pos.x, pos.y, 0, ant_angle.value)
-          left = sense_pheromone(to_food_grid, pos.x, pos.y, -ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
-          right = sense_pheromone(to_food_grid, pos.x, pos.y, ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
+        # Bias toward nest when carrying food
+        ant_angle.value += angle_diff * 0.1
+      end
+    else
+      # Searching for food - follow "to food" pheromones and deposit "to home" pheromones
+      deposit_pheromone(to_home_grid, pos.x, pos.y, PHEROMONE_STRENGTH)
 
-          if left > forward && left > right
-            ant_angle.value -= ANT_TURN_SPEED
-          elsif right > forward && right > left
-            ant_angle.value += ANT_TURN_SPEED
-          else
-            ant_angle.value += (rand - 0.5) * ANT_WANDER_STRENGTH
-          end
+      food_found = false
+      closest_food_dist = Float::INFINITY
+      closest_food_angle = nil
 
-          # If food detected nearby, bias toward it strongly
-          if closest_food_angle
-            angle_diff = closest_food_angle - ant_angle.value
-            angle_diff = (angle_diff + Math::PI) % (2 * Math::PI) - Math::PI
-            ant_angle.value += angle_diff * 0.2
+      args.state.entities.each_entity(Position, FoodComponent) do |entity_id, food_pos, food_comp|
+        next if food_comp.amount <= 0
+
+        dist = pos.distance_to(food_pos)
+
+        # Check if can pickup food
+        if dist < FOOD_SIZE
+          state.carrying_food = true
+          food_comp.amount -= 1
+          food_found = true
+
+          # Destroy food source if empty
+          if food_comp.amount <= 0
+            args.state.entities.destroy(entity_id)
           end
+          break
+        elsif dist < 50 && dist < closest_food_dist
+          # Track closest food for attraction
+          closest_food_dist = dist
+          to_food_x = food_pos.x - pos.x
+          to_food_y = food_pos.y - pos.y
+          closest_food_angle = Math.atan2(to_food_y, to_food_x)
         end
       end
 
-      # Update velocity based on angle
-      vel.x = Math.cos(ant_angle.value) * ANT_SPEED
-      vel.y = Math.sin(ant_angle.value) * ANT_SPEED
+      unless food_found
+        # Follow to-food pheromones
+        forward = sense_pheromone(to_food_grid, pos.x, pos.y, 0, ant_angle.value)
+        left = sense_pheromone(to_food_grid, pos.x, pos.y, -ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
+        right = sense_pheromone(to_food_grid, pos.x, pos.y, ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
 
-      # Update position
-      pos.x += vel.x
-      pos.y += vel.y
+        if left > forward && left > right
+          ant_angle.value -= ANT_TURN_SPEED
+        elsif right > forward && right > left
+          ant_angle.value += ANT_TURN_SPEED
+        else
+          ant_angle.value += (rand - 0.5) * ANT_WANDER_STRENGTH
+        end
 
-      # Wrap around screen
-      pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
-      pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
+        # If food detected nearby, bias toward it strongly
+        if closest_food_angle
+          angle_diff = closest_food_angle - ant_angle.value
+          angle_diff = (angle_diff + Math::PI) % (2 * Math::PI) - Math::PI
+          ant_angle.value += angle_diff * 0.2
+        end
+      end
     end
+
+    # Update velocity based on angle
+    vel.x = Math.cos(ant_angle.value) * ANT_SPEED
+    vel.y = Math.sin(ant_angle.value) * ANT_SPEED
+
+    # Update position
+    pos.x += vel.x
+    pos.y += vel.y
+
+    # Wrap around screen
+    pos.x = (pos.x + RESOLUTION[:w]) % RESOLUTION[:w]
+    pos.y = (pos.y + RESOLUTION[:h]) % RESOLUTION[:h]
   end
 
   # Render
