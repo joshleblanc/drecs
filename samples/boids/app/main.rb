@@ -3,13 +3,13 @@ RESOLUTION = {
   h: 720
 }
 
-BOIDS_COUNT = 750
+BOIDS_COUNT = 2500
 
 SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 1.0
 COHESION_WEIGHT = 1.0
 
-BOUNCE = true
+BOUNCE = false
 
 MOVEMENT_ACCURACY = 2
 
@@ -158,14 +158,14 @@ def tick(args)
   # Work on boids using the new ECS query API. The arrays are aligned by index.
   args.state.entities.query(Position, Velocity, Size, Color) do |positions, velocities, sizes, colors|
     # Populate spatial grid with boid indices
-    positions.each_with_index do |pos, i|
+    Array.each_with_index(positions) do |pos, i|
       grid_x = (pos.x.to_i * GRID_POS_FACTOR).clamp(0, MAX_GRID_COLS)
       grid_y = (pos.y.to_i * GRID_POS_FACTOR).clamp(0, MAX_GRID_ROWS)
       grid[grid_x][grid_y] << i
     end
 
     # Simulation update
-    positions.each_with_index do |pos, i|
+    Array.each_with_index(positions) do |pos, i|
       vel = velocities[i]
 
       # Reset steering accumulators
@@ -244,7 +244,7 @@ def tick(args)
     end
 
     # Build solids for rendering
-    positions.each_with_index do |pos, i|
+    Array.each_with_index(positions) do |pos, i|
       size = sizes[i]
       color = colors[i]
       solids << {
@@ -263,8 +263,10 @@ def tick(args)
   if args.inputs.keyboard.key_down.space
     args.state.entities.query(Position, Velocity, Size, Color) do |_, _, _, _, entity_ids|
       id = entity_ids.sample
-      args.state.entities.remove_component(id, Color) if id
-      break # only remove one per keypress
+      if id
+        args.state.entities.remove_component(id, Color)
+        break # only remove one per keypress
+      end
     end
   end
 

@@ -18,26 +18,24 @@ def boot(args)
 end
 
 def tick(args)
-    args.state.entities.query(Position, Velocity) do |positions, velocities|
-       positions.each_with_index do |pos, i|
-           pos.x += velocities[i].dx
-           pos.y += velocities[i].dy
-       end 
+    # Update all entities with velocity
+    args.state.entities.each_entity(Position, Velocity) do |entity_id, pos, vel|
+        pos.x += vel.dx
+        pos.y += vel.dy
     end
 
     puts "--- Tick Report ---"
-    args.state.entities.query(Position, Tag) do |positions, tags|
-        positions.each_with_index do |pos, i|
-            tag = tags[i]
-            puts "#{tag.name} is at #{pos.x.round(2)}, #{pos.y.round(2)}"
-        end
+    args.state.entities.each_entity(Position, Tag) do |entity_id, pos, tag|
+        puts "#{tag.name} is at #{pos.x.round(2)}, #{pos.y.round(2)}"
     end
+    puts "Entity count: #{args.state.entities.entity_count}"
+    puts "Archetype count: #{args.state.entities.archetype_count}"
     puts "-------------------"
 
     if args.state.tick_count == 1
-        args.state.entities.add_component(
-            args.state.tree,
-            Velocity.new(-5, 0)
-        )
+        # Add velocity to the tree using the new API
+        if args.state.entities.add_component(args.state.tree, Velocity.new(-5, 0))
+            puts "Tree now has velocity!"
+        end
     end
 end
