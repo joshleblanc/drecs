@@ -3,7 +3,7 @@ RESOLUTION = {
   h: 720
 }
 
-ANTS_COUNT = 200
+ANTS_COUNT = 1500
 ANT_SIZE = 4
 NEST_SIZE = 40
 
@@ -91,17 +91,15 @@ def boot(args)
   )
 
   # Create food sources
-  args.state.food_sources = []
   FOOD_COUNT.times do
     angle = rand * Math::PI * 2
     distance = 200 + rand * 150
     fx = RESOLUTION.w / 2 + Math.cos(angle) * distance
     fy = RESOLUTION.h / 2 + Math.sin(angle) * distance
-    food_id = args.state.entities.spawn(
+    args.state.entities.spawn(
       Position.new(fx, fy),
       FoodComponent.new(FOOD_PIECES_PER_SOURCE)
     )
-    args.state.food_sources << food_id
   end
 
   # Create ants
@@ -198,48 +196,36 @@ def tick(args)
         # Searching for food - follow "to food" pheromones and deposit "to home" pheromones
         deposit_pheromone(to_home_grid, pos.x, pos.y, PHEROMONE_STRENGTH)
 
-        # Check for nearby food
         food_found = false
-        args.state.food_sources.each do |food_id|
-          next unless args.state.entities.entity_exists?(food_id)
-          food_pos = args.state.entities.get_component(food_id, Position)
-          food_comp = args.state.entities.get_component(food_id, FoodComponent)
+        closest_food_dist = Float::INFINITY
+        closest_food_angle = nil
 
-          if pos.distance_to(food_pos) < FOOD_SIZE && food_comp.amount > 0
+        args.state.entities.each_entity(Position, FoodComponent) do |entity_id, food_pos, food_comp|
+          next if food_comp.amount <= 0
+
+          dist = pos.distance_to(food_pos)
+
+          # Check if can pickup food
+          if dist < FOOD_SIZE
             state.carrying_food = true
             food_comp.amount -= 1
             food_found = true
 
             # Destroy food source if empty
             if food_comp.amount <= 0
-              args.state.entities.destroy(food_id)
-              args.state.food_sources.delete(food_id)
+              args.state.entities.destroy(entity_id)
             end
             break
+          elsif dist < 50 && dist < closest_food_dist
+            # Track closest food for attraction
+            closest_food_dist = dist
+            to_food_x = food_pos.x - pos.x
+            to_food_y = food_pos.y - pos.y
+            closest_food_angle = Math.atan2(to_food_y, to_food_x)
           end
         end
 
         unless food_found
-          # Check if there's nearby food to move toward
-          closest_food_dist = Float::INFINITY
-          closest_food_angle = nil
-
-          args.state.food_sources.each do |food_id|
-            next unless args.state.entities.entity_exists?(food_id)
-            food_pos = args.state.entities.get_component(food_id, Position)
-            food_comp = args.state.entities.get_component(food_id, FoodComponent)
-
-            next if food_comp.amount <= 0
-
-            dist = pos.distance_to(food_pos)
-            if dist < 50 && dist < closest_food_dist  # Detect food within range
-              closest_food_dist = dist
-              to_food_x = food_pos.x - pos.x
-              to_food_y = food_pos.y - pos.y
-              closest_food_angle = Math.atan2(to_food_y, to_food_x)
-            end
-          end
-
           # Follow to-food pheromones
           forward = sense_pheromone(to_food_grid, pos.x, pos.y, 0, ant_angle.value)
           left = sense_pheromone(to_food_grid, pos.x, pos.y, -ANT_SENSE_ANGLE * Math::PI / 180, ant_angle.value)
@@ -314,20 +300,18 @@ def tick(args)
   }
 
   # Render food sources
-  args.state.food_sources.each do |food_id|
-    next unless args.state.entities.entity_exists?(food_id)
-    food_pos = args.state.entities.get_component(food_id, Position)
-    food_comp = args.state.entities.get_component(food_id, FoodComponent)
-
-    args.outputs.solids << {
-      x: food_pos.x - FOOD_SIZE,
-      y: food_pos.y - FOOD_SIZE,
-      w: FOOD_SIZE * 2,
-      h: FOOD_SIZE * 2,
-      r: 0,
-      g: 255,
-      b: 0
-    }
+  args.state.entities.query(Position, FoodComponent) do |entity_ids, positions, food_comps|
+    Array.each_with_index(positions) do |food_pos, i|
+      args.outputs.solids << {
+        x: food_pos.x - FOOD_SIZE,
+        y: food_pos.y - FOOD_SIZE,
+        w: FOOD_SIZE * 2,
+        h: FOOD_SIZE * 2,
+        r: 0,
+        g: 255,
+        b: 0
+      }
+    end
   end
 
   # Render ants

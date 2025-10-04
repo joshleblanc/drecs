@@ -294,7 +294,8 @@ module Drecs
       return to_enum(:each_entity, *component_classes) unless block_given?
 
       query(*component_classes) do |entity_ids, *stores|
-        Array.each_with_index(entity_ids) do |entity_id, i|
+        # not using Array.each_with_index here because we want to be able to `break` this loop
+        entity_ids.each_with_index do |entity_id, i|
           components = stores.map { |store| store[i] }
           yield(entity_id, *components)
         end
