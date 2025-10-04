@@ -102,11 +102,12 @@ end
 The `query` method returns component arrays for high-performance batch processing:
 
 ```ruby
-# Query returns arrays of components + entity IDs
-world.query(Position, Velocity) do |positions, velocities, entity_ids|
+# Query yields entity_ids first, then component arrays
+world.query(Position, Velocity) do |entity_ids, positions, velocities|
   # Arrays are aligned by index
   positions.each_with_index do |pos, i|
     vel = velocities[i]
+    entity_id = entity_ids[i]
     pos.x += vel.dx
     pos.y += vel.dy
   end

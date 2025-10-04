@@ -156,7 +156,7 @@ def tick(args)
   solids = []
 
   # Work on boids using the new ECS query API. The arrays are aligned by index.
-  args.state.entities.query(Position, Velocity, Size, Color) do |positions, velocities, sizes, colors|
+  args.state.entities.query(Position, Velocity, Size, Color) do |entity_ids, positions, velocities, sizes, colors|
     # Populate spatial grid with boid indices
     Array.each_with_index(positions) do |pos, i|
       grid_x = (pos.x.to_i * GRID_POS_FACTOR).clamp(0, MAX_GRID_COLS)
@@ -261,7 +261,7 @@ def tick(args)
   end
 
   if args.inputs.keyboard.key_down.space
-    args.state.entities.query(Position, Velocity, Size, Color) do |_, _, _, _, entity_ids|
+    args.state.entities.query(Position, Velocity, Size, Color) do |entity_ids, *rest|
       id = entity_ids.sample
       if id
         args.state.entities.remove_component(id, Color)

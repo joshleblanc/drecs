@@ -260,7 +260,7 @@ module Drecs
     end
 
     # The query interface for systems.
-    # Always yields component arrays followed by entity_ids array.
+    # Yields entity_ids array first, followed by component arrays.
     def query(*component_classes, &block)
       # If no block is given, return an enumerator that will yield the same values.
       return to_enum(:query, *component_classes) unless block_given?
@@ -279,8 +279,8 @@ module Drecs
         # Pre-compute component stores to avoid repeated hash lookups
         stores = component_classes.map { |klass| archetype.component_stores[klass] }
 
-        # Yield the raw component arrays for high-speed iteration, plus entity_ids
-        yield(*stores, archetype.entity_ids)
+        # Yield entity_ids first, then component arrays for high-speed iteration
+        yield(archetype.entity_ids, *stores)
       end
     end
 
@@ -290,10 +290,7 @@ module Drecs
     def each_entity(*component_classes, &block)
       return to_enum(:each_entity, *component_classes) unless block_given?
 
-      query(*component_classes) do |*stores_and_ids|
-        entity_ids = stores_and_ids.last
-        stores = stores_and_ids[0...-1]
-
+      query(*component_classes) do |entity_ids, *stores|
         Array.each_with_index(entity_ids) do |entity_id, i|
           components = stores.map { |store| store[i] }
           yield(entity_id, *components)

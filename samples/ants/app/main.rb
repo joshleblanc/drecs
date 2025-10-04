@@ -92,7 +92,7 @@ def tick(args)
   end
 
   # cap to max speed
-  args.state.entities.query(Velocity) do |velocities, entity_ids|
+  args.state.entities.query(Velocity) do |entity_ids, velocities|
     velocities.each do |vel|
       speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y)
       if speed > args.state.config[:max_speed]
