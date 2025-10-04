@@ -1,12 +1,20 @@
 # Drecs
 
-Drecs is a teeny tiny barebones ECS (Entity Component System) implementation for [DragonRuby](https://dragonruby.org/toolkit/game)
+Drecs is a high-performance archetype-based ECS (Entity Component System) implementation for [DragonRuby](https://dragonruby.org/toolkit/game).
+
+## Features
+
+- **Archetype-based storage** - Entities with the same component signatures are stored together for cache-friendly iteration
+- **High-speed queries** - Pre-computed component stores eliminate hash lookups in hot paths
+- **Automatic archetype cleanup** - Empty archetypes are removed to prevent memory growth
+- **Flexible component operations** - Add, remove, or batch-update components with archetype migration
+- **Debug/inspection tools** - Built-in methods to understand world state and performance
 
 ## Installation
 
-While there's no formal package manager for DragonRuby, you can use clone the project into your `lib` folder to pull down the code into your project.
+Clone the project into your `lib` folder:
 
-```
+```bash
 git clone https://github.com/joshleblanc/drecs.git lib/drecs
 ```
 
@@ -16,164 +24,170 @@ Simply `require "lib/drecs/lib/drecs.rb"` at the top of your `main.rb`.
 
 ### Creating a World
 
-The world is the central container for all entities, components, and queries.
-
 ```ruby
 require 'lib/drecs/lib/drecs.rb'
 
-# Create a world using a block
-world = Drecs.world do
-  # Optional: give your world a name
-  name :game_world
-  
-  # Configure debug mode (default: false)
-  debug true
+def boot(args)
+  args.state.world = Drecs::World.new
 end
 ```
 
-### Creating and Managing Entities
+### Defining Components
 
-Entities are containers for components. Each entity has a unique ID.
+Components are simple Ruby classes (typically Structs) that hold data:
 
 ```ruby
-# Create an entity with components
-entity = world.entity do
-  # Name the entity (optional)
-  name :player
-  
-  # Make the entity accessible via world.player (optional)
-  as :player
-  
-  # Add components directly
-  component :position, { x: 100, y: 100 }
-  component :velocity, { x: 0, y: 0 }
-  component :size, { width: 32, height: 32 }
+Position = Struct.new(:x, :y)
+Velocity = Struct.new(:dx, :dy)
+Health = Struct.new(:current, :max)
+Tag = Struct.new(:name)
 
-  # A no argument component is a tag
-  component :friendly
-
-  # Special helper that hooks directly into draw_override
-  draw do |ffi_draw|
-    ffi_draw.sprite(x: position.x, y: position.y, w: size.width, h: size.height)
-  end
-end
-
-# Adding components later
-entity.add_component(:health, amount: 100)
-
-# Or using the shorthand
-entity.add(:sprite, path: 'sprites/player.png')
-
-# Removing components
-entity.remove(:velocity)
-
-# Accessing components
-entity[:position] # => { x: 100, y: 100 }
-
-# Components are also accessible as methods
-entity.position # => { x: 100, y: 100 }
-
-# Finding entities by name
-player = world.entity(:player)
+# Tag components (no data)
+Player = Struct.new("Player")
+Enemy = Struct.new("Enemy")
 ```
 
-### Adding Entities Using Hash Syntax
+### Creating Entities
 
-You can also add entities using a hash syntax:
+Entities are created with the `spawn` method, passing component instances:
 
 ```ruby
-# Add an entity with components in a single operation
-world << {
-  position: { x: 200, y: 200 },
-  size: { width: 64, height: 64 },
-  sprite: { path: 'sprites/enemy.png' },
-  # A no argument component is a tag
-  friendly: nil,
-  # Special draw component that takes a block
-  draw: ->(ffi_draw) {
-    ffi_draw.sprite(x: 200, y: 200, w: 64, h: 64, path: 'sprites/enemy.png')
-  }
-}
+# Spawn an entity with multiple components
+player_id = world.spawn(
+  Position.new(100, 100),
+  Velocity.new(0, 0),
+  Health.new(100, 100),
+  Player.new
+)
+
+# Spawn enemies
+enemy_id = world.spawn(
+  Position.new(200, 200),
+  Health.new(50, 50),
+  Enemy.new
+)
+```
+
+### Managing Components
+
+```ruby
+# Add a component to an existing entity
+world.add_component(entity_id, Velocity.new(5, 0))
+
+# Remove a component
+world.remove_component(entity_id, Velocity)
+
+# Batch update multiple components (more efficient than multiple add_component calls)
+world.set_components(entity_id,
+  Position.new(150, 150),
+  Velocity.new(10, 5)
+)
+
+# Get a specific component
+pos = world.get_component(entity_id, Position)
+
+# Check if entity has a component
+if world.has_component?(entity_id, Health)
+  # ...
+end
+
+# Check if entity exists
+if world.entity_exists?(entity_id)
+  # ...
+end
 ```
 
 ### Querying Entities
 
-Queries let you find entities with specific component combinations.
+The `query` method returns component arrays for high-performance batch processing:
 
 ```ruby
-# Query for entities with specific components
-movables = world.with(:position, :velocity)
-
-# Query for entities with some components but not others
-enemies = world.with(:position, :ai).without(:friendly)
-
-# More complex queries
-query = world.query do
-  with(:position, :sprite)
-  without(:hidden)
-  as :visible_sprites  # Makes the query accessible as world.visible_sprites
-end
-
-# Process query results
-query.each do |entity|
-  # Do something with each entity
-  puts entity.position.x, entity.position.y
-end
-
-# Convert query results to array
-entities_array = query.to_a
-
-# Find a specific entity in query results
-player = query.find { |e| e.name == :player }
-
-# Get raw access to the entity cache
-query.raw do |entities|
-  # Direct access to the entity array
-end
-
-# Get the count of matching entities
-query.count
-```
-
-### (WIP) Parallel Processing with Jobs
-
-Process entities in parallel using the job system:
-
-```ruby
-# Process entities in parallel (4 at a time by default)
-world.with(:physics).job do |entity|
-  # This block runs in a separate thread for each entity
-  update_physics(entity)
-end
-
-# Specify batch size
-world.with(:ai).job(batch_size: 8) do |entity|
-  # Process 8 entities concurrently
-  update_ai(entity)
+# Query returns arrays of components + entity IDs
+world.query(Position, Velocity) do |positions, velocities, entity_ids|
+  # Arrays are aligned by index
+  positions.each_with_index do |pos, i|
+    vel = velocities[i]
+    pos.x += vel.dx
+    pos.y += vel.dy
+  end
 end
 ```
 
-### Performance Measurement
+For per-entity iteration, use `each_entity` (more ergonomic but slightly slower):
 
 ```ruby
-# Benchmark a block of code
-world.b('Update physics') do
-  # Code to benchmark
-  update_physics_system()
+# Iterate over individual entities
+world.each_entity(Position, Velocity) do |entity_id, pos, vel|
+  pos.x += vel.dx
+  pos.y += vel.dy
 end
 
-# Benchmark with allocation tracking
-world.b('Entity creation', allocations: true) do
-  # Track memory allocations in this block
-  create_many_entities()
+# Use entity_id to modify components
+world.each_entity(Health, Enemy) do |entity_id, health|
+  if health.current <= 0
+    world.destroy(entity_id)
+  end
 end
 ```
+
+### Destroying Entities
+
+```ruby
+# Destroy a single entity
+world.destroy(entity_id)
+
+# Destroy multiple entities at once (more efficient)
+world.destroy(entity_id1, entity_id2, entity_id3)
+
+# Collect entities to destroy, then destroy in batch
+to_destroy = []
+world.each_entity(Health) do |entity_id, health|
+  to_destroy << entity_id if health.current <= 0
+end
+world.destroy(*to_destroy) unless to_destroy.empty?
+```
+
+### Debug and Inspection
+
+```ruby
+# Get entity count
+puts "Entities: #{world.entity_count}"
+
+# Get archetype count
+puts "Archetypes: #{world.archetype_count}"
+
+# Get detailed archetype statistics
+world.archetype_stats.each do |stat|
+  puts "Archetype [#{stat[:components].join(', ')}]: #{stat[:entity_count]} entities"
+end
+```
+
+## Performance Tips
+
+1. **Use `query` for batch operations** - When processing many entities, `query` is faster than `each_entity` because it works with raw arrays
+2. **Batch component changes** - Use `set_components` instead of multiple `add_component` calls to avoid repeated archetype migrations
+3. **Batch entity destruction** - Collect entity IDs and call `destroy(*ids)` once instead of destroying individually
+4. **Component reuse** - Modify component values in-place when possible instead of creating new component instances
+5. **Empty archetype cleanup** - The library automatically cleans up empty archetypes, preventing memory growth
+
+## Examples
+
+See the `samples` directory for complete examples:
+
+- **trivial** - Basic ECS usage demonstrating core concepts
+- **boids** - High-performance flocking simulation with 2500+ entities
+- **ants** - Ant colony simulation with pheromones and state machines
 
 ## Development
 
-Samples are available in the samples directory. We use [drakkon](https://gitlab.com/dragon-ruby/drakkon) to manage the DragonRuby version. With drakkon installed, use `drakkon run` to run the sample.
+Samples are available in the samples directory. The main entry point is `app/main.rb` which loads a specific sample using CLI arguments.
 
-The drecs library is copied into the `lib` folder of the samples. You can create a Junction with the main lib folder on windows using `New-Item -ItemType Junction -Path lib -Target ..\..\lib` from within the sample app directory. This will let you modify drecs.rb in one place.
+To run samples, use DragonRuby with the appropriate sample argument:
+```bash
+dragonruby . --sample boids
+dragonruby . --sample ants
+dragonruby . --sample trivial
+```
 
 ## Contributing
 
