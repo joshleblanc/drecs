@@ -249,12 +249,15 @@ module Drecs
       @entity_locations[entity_id] = { archetype: new_archetype, row: new_row }
 
       # 6. Remove the entity from the old archetype, filling the hole
-      moved_entity_id = old_archetype.remove(location[:row])
+      moved_entity_id, is_empty = old_archetype.remove(location[:row])
 
       # 7. If another entity was moved to fill the hole, update its location
       if moved_entity_id && moved_entity_id != entity_id
         @entity_locations[moved_entity_id][:row] = location[:row]
       end
+
+      # 8. Clean up old archetype if it's now empty
+      cleanup_empty_archetypes([old_archetype]) if is_empty
 
       true
     end
