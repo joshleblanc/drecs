@@ -171,6 +171,42 @@ end
 4. **Component reuse** - Modify component values in-place when possible instead of creating new component instances
 5. **Empty archetype cleanup** - The library automatically cleans up empty archetypes, preventing memory growth
 
+## Multi-File Projects
+
+Since entities are just integers and components are just data, DrECS works naturally with multi-file projects. You can organize your code by creating:
+
+- **Component files** - Each component as a simple class/struct in its own file
+- **System files** - Plain Ruby classes with a `call(world, args)` method
+- **Main file** - Requires everything and orchestrates the game loop
+
+```ruby
+# app/components/position.rb
+class Position < Struct.new(:x, :y); end
+
+# app/systems/movement_system.rb
+class MovementSystem
+  def call(world, args)
+    world.each_entity(Position, Velocity) do |id, pos, vel|
+      pos.x += vel.x
+      pos.y += vel.y
+    end
+  end
+end
+
+# app/main.rb
+require_relative 'components/position.rb'
+require_relative 'systems/movement_system.rb'
+
+def boot(args)
+  args.state.world = Drecs::World.new
+  args.state.systems = [MovementSystem.new]
+end
+
+def tick(args)
+  args.state.systems.each { |sys| sys.call(args.state.world, args) }
+end
+```
+
 ## Examples
 
 See the `samples` directory for complete examples:
@@ -178,6 +214,7 @@ See the `samples` directory for complete examples:
 - **trivial** - Basic ECS usage demonstrating core concepts
 - **boids** - High-performance flocking simulation with 2500+ entities
 - **ants** - Ant colony simulation with pheromones and state machines
+- **spaceshooter** - Multi-file project structure with separate component and system files
 
 ## Development
 

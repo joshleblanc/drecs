@@ -43,7 +43,7 @@ def boot(args)
 end
 
 def tick(args)
-  args.state.systems.each do |system|
+  Array.each(args.state.systems) do |system|
     system.call(args.state.world, args)
   end
 
