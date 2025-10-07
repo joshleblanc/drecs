@@ -34,7 +34,9 @@ end
 
 ### Defining Components
 
-Components are simple Ruby classes (typically Structs) that hold data:
+Components can be simple Ruby Structs or plain hashes for rapid prototyping:
+
+**Struct Components (recommended for production):**
 
 ```ruby
 Position = Struct.new(:x, :y)
@@ -46,6 +48,25 @@ Tag = Struct.new(:name)
 Player = Struct.new("Player")
 Enemy = Struct.new("Enemy")
 ```
+
+**Hash Components (great for MVPs and prototyping):**
+
+```ruby
+# No need to define component structures upfront
+# Just use hashes with symbol keys directly
+entity = world.spawn({
+  position: { x: 100, y: 100 },
+  velocity: { dx: 5, dy: 0 },
+  sprite: { r: 255, g: 0, b: 0 }
+})
+
+# Query using symbols instead of classes
+world.query(:position, :velocity) do |entity_ids, positions, velocities|
+  # ...
+end
+```
+
+See the `samples/snake` example for a complete game built entirely with hash components.
 
 ### Creating Entities
 
@@ -215,6 +236,7 @@ See the `samples` directory for complete examples:
 - **boids** - High-performance flocking simulation with 2500+ entities
 - **ants** - Ant colony simulation with pheromones and state machines
 - **spaceshooter** - Multi-file project structure with separate component and system files
+- **snake** - Complete game built using hash components (great for MVPs and rapid prototyping)
 
 ## Development
 

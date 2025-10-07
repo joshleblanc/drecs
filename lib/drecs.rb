@@ -1,4 +1,10 @@
 module Drecs
+  module SignatureHelper 
+    def normalize_signature(component_classes)
+      component_classes.sort_by { |c| c.is_a?(Class) ? c.name : c.to_s }
+    end
+  end
+
   class EntityManager
     def initialize
       @next_id = 0
@@ -22,11 +28,13 @@ module Drecs
   end
 
   class Archetype
+    include SignatureHelper 
+
     attr_reader :component_classes, :component_stores, :entity_ids
 
     def initialize(component_classes)
       # The signature of the archetype, always sorted for consistent lookup.
-      @component_classes = component_classes.sort_by(&:name)
+      @component_classes = normalize_signature(component_classes)
       @component_stores = @component_classes.to_h { |klass| [klass, []] }
       @entity_ids = [] # Maps row index to the entity ID at that row
     end
@@ -66,6 +74,8 @@ module Drecs
   end
 
   class World
+    include SignatureHelper 
+    
     def initialize
       @entity_manager = EntityManager.new
       @systems = []
@@ -79,7 +89,13 @@ module Drecs
     # Creates a new entity with the given components.
     def spawn(*components)
       entity_id = @entity_manager.create_entity
-      components_hash = components.to_h { |c| [c.class, c] }
+
+      # Handle both struct instances and plain hashes
+      components_hash = if components.length == 1 && components[0].is_a?(Hash)
+        components[0]
+      else
+        components.to_h { |c| [c.class, c] }
+      end
 
       # Find or create the correct archetype
       signature = normalize_signature(components_hash.keys)
@@ -88,7 +104,7 @@ module Drecs
       # Add the entity to the archetype and record its location
       row = archetype.add(entity_id, components_hash)
       @entity_locations[entity_id] = { archetype: archetype, row: row }
-      
+
       entity_id
     end
 
@@ -122,9 +138,10 @@ module Drecs
     end
     
     # Adds a component to an existing entity. This triggers a move between archetypes.
-    def add_component(entity_id, component)
+    # For hash components, pass a hash like { position: { x: 0, y: 0 } }
+    def add_component(entity_id, component_key_or_component, component_value = nil)
       location = @entity_locations[entity_id]
-      return false unless location # Entity doesn't exist
+      return false unless location
 
       old_archetype = location[:archetype]
 
@@ -132,7 +149,17 @@ module Drecs
       all_components = old_archetype.component_classes.to_h do |klass|
         [klass, old_archetype.component_stores[klass][location[:row]]]
       end
-      all_components[component.class] = component # Add the new one
+
+      # Handle both hash-style and struct-style components
+      if component_value.nil?
+        if component_key_or_component.is_a?(Hash)
+          all_components.merge!(component_key_or_component)
+        else
+          all_components[component_key_or_component.class] = component_key_or_component
+        end
+      else
+        all_components[component_key_or_component] = component_value
+      end
 
       # 2. Find the new archetype based on the new signature
       new_signature = normalize_signature(all_components.keys)
@@ -220,7 +247,7 @@ module Drecs
     # If the entity doesn't exist, returns false. Components can be added or replaced.
     def set_components(entity_id, *components)
       location = @entity_locations[entity_id]
-      return false unless location # Entity doesn't exist
+      return false unless location
 
       old_archetype = location[:archetype]
 
@@ -230,7 +257,13 @@ module Drecs
       end
 
       # 2. Merge in the new components (overwriting any existing ones)
-      components.each { |c| all_components[c.class] = c }
+      components.each do |c|
+        if c.is_a?(Hash)
+          all_components.merge!(c)
+        else
+          all_components[c.class] = c
+        end
+      end
 
       # 3. Find the new archetype based on the new signature
       new_signature = normalize_signature(all_components.keys)
@@ -239,7 +272,11 @@ module Drecs
       # 4. If we're already in the right archetype, just update components in place
       if old_archetype == new_archetype
         components.each do |c|
-          new_archetype.component_stores[c.class][location[:row]] = c
+          if c.is_a?(Hash)
+            c.each { |k, v| new_archetype.component_stores[k][location[:row]] = v }
+          else
+            new_archetype.component_stores[c.class][location[:row]] = c
+          end
         end
         return true
       end
@@ -314,17 +351,13 @@ module Drecs
     def archetype_stats
       @archetypes.map do |signature, archetype|
         {
-          components: signature.map(&:name),
+          components: signature.map { |c| c.is_a?(Class) ? c.name : c.to_s },
           entity_count: archetype.entity_ids.length
         }
       end
     end
 
     private
-
-    def normalize_signature(component_classes)
-      component_classes.sort_by(&:name)
-    end
 
     def find_or_create_archetype(signature)
       @archetypes[signature] ||= Archetype.new(signature)
