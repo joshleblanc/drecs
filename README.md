@@ -12,20 +12,20 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 
 ## Installation
 
-Clone the project into your `lib` folder:
+In a dragonruby project, run the following in your dragonruby console:
 
 ```bash
-git clone https://github.com/joshleblanc/drecs.git lib/drecs
+GTK.download_stb_rb "https://github.com/joshleblanc/drecs/blob/master/lib/drecs.rb"
 ```
 
 ## Usage
 
-Simply `require "lib/drecs/lib/drecs.rb"` at the top of your `main.rb`.
+Simply `require "joshleblanc/drecs/drecs.rb"` at the top of your `main.rb`.
 
 ### Creating a World
 
 ```ruby
-require 'lib/drecs/lib/drecs.rb'
+require 'joshleblanc/drecs/drecs.rb'
 
 def boot(args)
   args.state.world = Drecs::World.new
