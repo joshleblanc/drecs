@@ -236,6 +236,7 @@ See the `samples` directory for complete examples:
 - **boids** - High-performance flocking simulation with 2500+ entities
 - **ants** - Ant colony simulation with pheromones and state machines
 - **spaceshooter** - Multi-file project structure with separate component and system files
+- **asteroids** - Classic Asteroids game with multi-file architecture (components and systems)
 - **snake** - Complete game built using hash components (great for MVPs and rapid prototyping)
 - **tetris** - Classic Tetris implementation with hash components
 - **performance** - Interactive benchmarking suite showing performance at various scales (1K-20K entities)

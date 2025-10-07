@@ -1,0 +1,1 @@
+Collider = Struct.new(:radius)
