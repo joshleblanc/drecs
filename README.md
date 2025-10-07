@@ -239,6 +239,7 @@ See the `samples` directory for complete examples:
 - **asteroids** - Classic Asteroids game with multi-file architecture (components and systems)
 - **snake** - Complete game built using hash components (great for MVPs and rapid prototyping)
 - **tetris** - Classic Tetris implementation with hash components
+- **flappy** - Flappy Bird clone using hash components with dynamic pipe spawning
 - **performance** - Interactive benchmarking suite showing performance at various scales (1K-20K entities)
 
 ## Development
