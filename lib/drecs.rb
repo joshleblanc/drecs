@@ -339,6 +339,17 @@ module Drecs
       end
     end
 
+    # Removes components from a passed query
+    # This is safe to use during iteration since it collects entities first.
+    def remove_components_from_query(query, *components)
+      entities = query.flat_map { |*args| args.first }
+      Array.each(entities) do |id|
+        Array.each(components) do |component|
+          remove_component(id, component)
+        end
+      end
+    end
+
     # Debug/inspection methods for understanding world state
     def entity_count
       @entity_locations.size
