@@ -108,6 +108,18 @@ module Drecs
       entity_id
     end
 
+    # Alias for spawn using the << operator for a more fluid API
+    # Examples:
+    #   world << Position.new(0, 0)
+    #   world << [Position.new(0, 0), Velocity.new(1, 1)]
+    def <<(components)
+      if components.is_a?(Array)
+        spawn(*components)
+      else
+        spawn(components)
+      end
+    end
+
     def destroy(*entity_ids)
       archetypes_to_cleanup = []
 
