@@ -351,6 +351,28 @@ module Drecs
       end
     end
 
+    # Finds the first entity that has the specified components.
+    # Returns [entity_id, component1, component2, ...] or nil if no match found.
+    # If a block is given, yields the entity_id and components, returning the entity_id.
+    def first_entity(*component_classes, &block)
+      query(*component_classes) do |entity_ids, *stores|
+        next if entity_ids.empty?
+
+        entity_id = entity_ids[0]
+        components = stores.map { |store| store[0] }
+
+        if block_given?
+          yield(entity_id, *components)
+          return entity_id
+        else
+          return [entity_id, *components]
+        end
+      end
+
+      # No matching entity found
+      nil
+    end
+
     # Removes components from a passed query
     # This is safe to use during iteration since it collects entities first.
     def remove_components_from_query(query, *components)

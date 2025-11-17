@@ -152,6 +152,22 @@ world.each_entity(Health, Enemy) do |entity_id, health|
 end
 ```
 
+To find just the first matching entity, use `first_entity`:
+
+```ruby
+# Returns [entity_id, component1, component2, ...] or nil if no match
+result = world.first_entity(Position, Velocity)
+if result
+  entity_id, pos, vel = result
+  puts "Found entity #{entity_id} at position (#{pos.x}, #{pos.y})"
+end
+
+# Or use with a block
+world.first_entity(Player, Health) do |entity_id, player, health|
+  puts "Player health: #{health.current}/#{health.max}"
+end
+```
+
 ### Destroying Entities
 
 ```ruby
