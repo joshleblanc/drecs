@@ -118,6 +118,18 @@ module Drecs
       entity_id
     end
 
+    # Alias for spawn using the << operator for a more fluid API
+    # Examples:
+    #   world << Position.new(0, 0)
+    #   world << [Position.new(0, 0), Velocity.new(1, 1)]
+    def <<(components)
+      if components.is_a?(Array)
+        spawn(*components)
+      else
+        spawn(components)
+      end
+    end
+
     def destroy(*entity_ids)
       archetypes_to_cleanup = []
 
@@ -347,6 +359,28 @@ module Drecs
           yield(entity_id, *components)
         end
       end
+    end
+
+    # Finds the first entity that has the specified components.
+    # Returns [entity_id, component1, component2, ...] or nil if no match found.
+    # If a block is given, yields the entity_id and components, returning the entity_id.
+    def first_entity(*component_classes, &block)
+      query(*component_classes) do |entity_ids, *stores|
+        next if entity_ids.empty?
+
+        entity_id = entity_ids[0]
+        components = stores.map { |store| store[0] }
+
+        if block_given?
+          yield(entity_id, *components)
+          return entity_id
+        else
+          return [entity_id, *components]
+        end
+      end
+
+      # No matching entity found
+      nil
     end
 
     # Removes components from a passed query
