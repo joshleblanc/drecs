@@ -1,14 +1,15 @@
 module Drecs
   module SignatureHelper 
     def normalize_signature(component_classes)
-      component_classes.sort_by { |c| c.is_a?(Class) ? c.name : c.to_s }
+      component_classes.sort_by { |c| c.is_a?(Class) ? c.name : c.to_s }.freeze
     end
   end
 
   class EntityManager
-    def initialize
+    def initialize(reuse_entity_ids: true)
       @next_id = 0
       @freed_ids = nil # Lazily initialized for memory efficiency
+      @reuse_entity_ids = reuse_entity_ids
     end
 
     def create_entity
@@ -22,6 +23,7 @@ module Drecs
     end
 
     def destroy_entity(id)
+      return unless @reuse_entity_ids
       @freed_ids ||= []
       @freed_ids << id
     end
@@ -76,9 +78,11 @@ module Drecs
   class World
     include SignatureHelper 
     
-    def initialize
-      @entity_manager = EntityManager.new
+    def initialize(reuse_entity_ids: true, validate_components: false)
+      @entity_manager = EntityManager.new(reuse_entity_ids: reuse_entity_ids)
       @systems = []
+
+      @validate_components = validate_components
 
       # The core lookup tables
       @archetypes = {} # { [Component Classes Signature] => Archetype }
@@ -94,6 +98,12 @@ module Drecs
       components_hash = if components.length == 1 && components[0].is_a?(Hash)
         components[0]
       else
+        if @validate_components
+          classes = components.map(&:class)
+          if classes.uniq.length != classes.length
+            raise ArgumentError, "Duplicate component types passed to spawn"
+          end
+        end
         components.to_h { |c| [c.class, c] }
       end
 
@@ -371,7 +381,8 @@ module Drecs
     private
 
     def find_or_create_archetype(signature)
-      @archetypes[signature] ||= Archetype.new(signature)
+      normalized = normalize_signature(signature)
+      @archetypes[normalized] ||= Archetype.new(normalized)
     end
 
     def cleanup_empty_archetypes(archetypes)

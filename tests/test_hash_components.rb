@@ -52,3 +52,30 @@ def test_hash_set_components args, assert
   velocity = world.get_component(entity, :velocity)
   assert.equal! velocity, { dx: 1, dy: 2 }
 end
+
+def test_signature_is_frozen args, assert
+  world = Drecs::World.new
+  entity = world.spawn({ position: { x: 1, y: 2 } })
+
+  loc = world.instance_variable_get(:@entity_locations)[entity]
+  archetype = loc[:archetype]
+
+  assert.equal! archetype.component_classes.frozen?, true
+end
+
+def test_spawn_duplicate_components_raises_when_validation_enabled args, assert
+  position_klass = if Object.const_defined?(:DrecsTestPosition)
+    Object.const_get(:DrecsTestPosition)
+  else
+    Object.const_set(:DrecsTestPosition, Struct.new(:x, :y))
+  end
+
+  world = Drecs::World.new(validate_components: true)
+
+  begin
+    world.spawn(position_klass.new(1, 2), position_klass.new(3, 4))
+    assert.equal! true, false
+  rescue ArgumentError
+    assert.equal! true, true
+  end
+end
