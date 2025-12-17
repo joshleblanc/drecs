@@ -53,6 +53,41 @@ def test_hash_set_components args, assert
   assert.equal! velocity, { dx: 1, dy: 2 }
 end
 
+def test_destroy_query_hash_components args, assert
+  world = Drecs::World.new
+
+  world.spawn({ position: { x: 10, y: 20 }, velocity: { dx: 1, dy: 2 } })
+  world.spawn({ position: { x: 5, y: 15 }, velocity: { dx: 3, dy: 4 } })
+  world.spawn({ position: { x: 1, y: 2 } })
+
+  world.destroy_query(:position, :velocity)
+
+  count = 0
+  world.query(:position) do |entity_ids, positions|
+    count = entity_ids.length
+  end
+
+  assert.equal! count, 1
+end
+
+def test_destroy_from_query_hash_components args, assert
+  world = Drecs::World.new
+
+  world.spawn({ position: { x: 10, y: 20 }, velocity: { dx: 1, dy: 2 } })
+  world.spawn({ position: { x: 5, y: 15 }, velocity: { dx: 3, dy: 4 } })
+  world.spawn({ position: { x: 1, y: 2 } })
+
+  q = world.query(:position, :velocity)
+  world.destroy_from_query(q)
+
+  count = 0
+  world.query(:position) do |entity_ids, positions|
+    count = entity_ids.length
+  end
+
+  assert.equal! count, 1
+end
+
 def test_signature_is_frozen args, assert
   world = Drecs::World.new
   entity = world.spawn({ position: { x: 1, y: 2 } })

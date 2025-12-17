@@ -62,3 +62,20 @@ def test_append_entity_queryable args, assert
 
   assert.equal! count, 2
 end
+
+def test_destroy_query_struct_components args, assert
+  world = Drecs::World.new
+
+  world << [Position.new(10, 20), Velocity.new(1, 2)]
+  world << [Position.new(30, 40), Velocity.new(3, 4)]
+  world << Position.new(1, 2)
+
+  world.destroy_query(Position, Velocity)
+
+  count = 0
+  world.query(Position) do |entity_ids, positions|
+    count = entity_ids.length
+  end
+
+  assert.equal! count, 1
+end

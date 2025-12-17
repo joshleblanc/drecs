@@ -406,6 +406,18 @@ module Drecs
       end
     end
 
+    # Destroys all entities that match a passed query.
+    # This is safe to use during iteration since it collects entities first.
+    def destroy_from_query(query)
+      entities = query.flat_map { |*args| args.first }
+      destroy(*entities) unless entities.empty?
+    end
+
+    # Convenience wrapper for destroying all entities matching a query signature.
+    def destroy_query(*component_classes)
+      destroy_from_query(query(*component_classes))
+    end
+
     # Debug/inspection methods for understanding world state
     def entity_count
       @entity_locations.size
