@@ -152,6 +152,28 @@ world.each_entity(Health, Enemy) do |entity_id, health|
 end
 ```
 
+#### Deferring World Mutations During Iteration
+
+When iterating entities, you may want to make structural changes to the world (destroy entities, add/remove components, etc.). In those cases, use `defer` to schedule work that should run *after* iteration completes.
+
+`each_entity` automatically calls `flush_defer!` when it finishes.
+
+```ruby
+# Safely destroy entities found during iteration
+world.each_entity(Health, Enemy) do |entity_id, health|
+  if health.current <= 0
+    world.defer { |w| w.destroy(entity_id) }
+  end
+end
+```
+
+If you call `defer` outside of `each_entity` (or you want to flush sooner), call `flush_defer!` manually:
+
+```ruby
+world.defer { |w| w.spawn(Position.new(0, 0)) }
+world.flush_defer!
+```
+
 To find just the first matching entity, use `first_entity`:
 
 ```ruby
