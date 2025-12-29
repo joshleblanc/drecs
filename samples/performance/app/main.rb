@@ -12,7 +12,9 @@ SCENARIOS = [
   { name: "1K Entities - Complex Query", count: 1000, complex: true },
   { name: "5K Entities - Complex Query", count: 5000, complex: true },
   { name: "10K Entities - Archetype Migration", count: 10000, migration: true },
-  { name: "1K Entities - Batch Destroy", count: 1000, destroy: true }
+  { name: "1K Entities - Batch Destroy", count: 1000, destroy: true },
+  { name: "100K Entities - Create (3 Components)", count: 100000, creation_only: true },
+  { name: "100K Entities - System (3 Components)", count: 100000, system_3comp: true }
 ]
 
 def tick(args)
@@ -54,22 +56,37 @@ def setup_scenario(args, scenario)
   args.state.world = Drecs::World.new
   world = args.state.world
 
-  scenario[:count].times do |i|
-    components = [
+  if scenario[:creation_only] || scenario[:system_3comp]
+    world.spawn_many(scenario[:count], 
       Position.new(rand(1280), rand(720)),
-      Velocity.new(Numeric.rand(-5.0..5.0), Numeric.rand(-5.0..5.0))
-    ]
+      Velocity.new(Numeric.rand(-5.0..5.0), Numeric.rand(-5.0..5.0)),
+      Health.new(100, 100),
+      Damage.new(Numeric.rand(1..10))
+    )
+  else
+    scenario[:count].times do |i|
+      components = [
+        Position.new(rand(1280), rand(720)),
+        Velocity.new(Numeric.rand(-5.0..5.0), Numeric.rand(-5.0..5.0))
+      ]
 
-    if scenario[:complex]
-      components << Health.new(100, 100)
-      components << Damage.new(Numeric.rand(1..10))
-      components << Tag.new("entity_#{i}")
+      if scenario[:complex]
+        components << Health.new(100, 100)
+        components << Damage.new(Numeric.rand(1..10))
+        components << Tag.new("entity_#{i}")
+      end
+
+      world.spawn(*components)
     end
-
-    world.spawn(*components)
   end
 
   args.state.scenario = scenario
+  
+  # Cache queries for the scenario
+  args.state.pos_vel_query = world.query_for(Position, Velocity)
+  if scenario[:complex] || scenario[:system_3comp]
+    args.state.health_damage_query = world.query_for(Health, Damage)
+  end
 end
 
 def run_benchmark(args)
@@ -78,7 +95,11 @@ def run_benchmark(args)
 
   if args.state.warmup_frames < 60
     args.state.warmup_frames += 1
-    perform_scenario_work(args, scenario, world)
+    if scenario[:creation_only]
+      setup_scenario(args, scenario)
+    else
+      perform_scenario_work(args, scenario, world)
+    end
     render_benchmark_progress(args, "Warming up...", args.state.warmup_frames / 60.0)
     return
   end
@@ -86,7 +107,11 @@ def run_benchmark(args)
   if args.state.benchmark_frames < 300
     start_time = Time.now
 
-    perform_scenario_work(args, scenario, world)
+    if scenario[:creation_only]
+      setup_scenario(args, scenario)
+    else
+      perform_scenario_work(args, scenario, world)
+    end
 
     end_time = Time.now
     frame_time = (end_time - start_time) * 1000
@@ -123,8 +148,11 @@ def perform_scenario_work(args, scenario, world)
     end
   end
 
-  world.query(Position, Velocity) do |entity_ids, positions, velocities|
-    positions.each_with_index do |pos, i|
+  args.state.pos_vel_query.each do |entity_ids, positions, velocities|
+    i = 0
+    len = positions.length
+    while i < len
+      pos = positions[i]
       vel = velocities[i]
       pos.x += vel.dx
       pos.y += vel.dy
@@ -133,15 +161,20 @@ def perform_scenario_work(args, scenario, world)
       pos.x = 1280 if pos.x < 0
       pos.y = 0 if pos.y > 720
       pos.y = 720 if pos.y < 0
+      i += 1
     end
   end
 
-  if scenario[:complex]
-    world.query(Health, Damage) do |entity_ids, healths, damages|
-      healths.each_with_index do |health, i|
+  if scenario[:complex] || scenario[:system_3comp]
+    args.state.health_damage_query.each do |entity_ids, healths, damages|
+      i = 0
+      len = healths.length
+      while i < len
+        health = healths[i]
         damage = damages[i]
         health.current = [health.current - damage.value * 0.01, 0].max
         health.current = health.max if health.current == 0
+        i += 1
       end
     end
   end

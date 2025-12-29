@@ -27,17 +27,86 @@ module Drecs
       @freed_ids ||= []
       @freed_ids << id
     end
+
+    def batch_create_entities(count)
+      return [] if count <= 0
+      
+      ids = []
+      if @freed_ids && !@freed_ids.empty?
+        pop_count = [count, @freed_ids.length].min
+        ids.concat(@freed_ids.pop(pop_count))
+        count -= pop_count
+      end
+
+      if count > 0
+        start_id = @next_id
+        @next_id += count
+        # this is faster than just splatting it into the array for some reason
+        (start_id...start_id + count).each { |i| ids << i }
+      end
+      
+      ids
+    end
+  end
+
+  # Represents a cached query that avoids signature normalization on every iterate.
+  class Query
+    attr_reader :world, :component_classes, :signature, :matching_archetypes
+
+    def initialize(world, component_classes)
+      @world = world
+      @component_classes = component_classes
+      @signature = world.normalize_signature(component_classes)
+      refresh!
+    end
+
+    # Updates the list of matching archetypes. Called automatically when the world 
+    # creates new archetypes.
+    def refresh!
+      @matching_archetypes = []
+      @cached_stores = []
+
+      @world.archetypes.each_value do |archetype|
+        if (@signature - archetype.component_classes).empty?
+          @matching_archetypes << archetype
+          
+          # Pre-calculate the exact arrays we need to yield
+          indices = Array.map(@component_classes) { |klass|
+            archetype.component_classes.index(klass)
+          }
+          stores = indices.map { |idx| archetype.stores_list[idx] }
+          @cached_stores << stores
+        end
+      end
+    end
+
+    def each(&block)
+      i = 0
+      len = @matching_archetypes.length
+      while i < len
+        archetype = @matching_archetypes[i]
+        ids = archetype.entity_ids
+        
+        # Skip empty archetypes
+        unless ids.empty?
+          yield(ids, *@cached_stores[i])
+        end
+        
+        i += 1
+      end
+    end
   end
 
   class Archetype
     include SignatureHelper 
 
-    attr_reader :component_classes, :component_stores, :entity_ids
+    attr_reader :component_classes, :component_stores, :stores_list, :entity_ids
 
     def initialize(component_classes)
       # The signature of the archetype, always sorted for consistent lookup.
       @component_classes = normalize_signature(component_classes)
       @component_stores = @component_classes.to_h { |klass| [klass, []] }
+      @stores_list = @component_classes.map { |k| @component_stores[k] } # Fast array access
       @entity_ids = [] # Maps row index to the entity ID at that row
     end
 
@@ -48,6 +117,17 @@ module Drecs
       end
       @entity_ids << entity_id
       @entity_ids.length - 1 # Return the new row index
+    end
+
+    # Optimized add when components are already an array matching signature classes
+    def add_ordered(entity_id, components_array)
+      # WARNING: This assumes components_array is in the correct order as @component_classes
+      # and matches the length exactly.
+      @component_classes.each_with_index do |klass, i|
+        @component_stores[klass] << components_array[i]
+      end
+      @entity_ids << entity_id
+      @entity_ids.length - 1
     end
 
     # Removes an entity from a specific row. This is a critical performance path.
@@ -86,8 +166,15 @@ module Drecs
 
       # The core lookup tables
       @archetypes = {} # { [Component Classes Signature] => Archetype }
-      @entity_locations = {} # { entity_id => { archetype:, row: } }
+      
+      # Optimized location storage: Index is entity_id
+      @entity_archetypes = [] 
+      @entity_rows = []
+      @entity_count = 0
+      
       @signature_cache = {} # Cache for normalized signatures
+      @query_cache = {} # Cache for matching archetypes per query signature
+      @active_queries = [] # List of Query objects to refresh when archetypes change
 
       @deferred = []
     end
@@ -124,8 +211,11 @@ module Drecs
       entity_id = @entity_manager.create_entity
 
       # Handle both struct instances and plain hashes
-      components_hash = if components.length == 1 && components[0].is_a?(Hash)
-        components[0]
+      if components.length == 1 && components[0].is_a?(Hash)
+        components_hash = components[0]
+        signature = normalize_signature(components_hash.keys)
+        archetype = find_or_create_archetype(signature)
+        row = archetype.add(entity_id, components_hash)
       else
         if @validate_components
           classes = components.map(&:class)
@@ -133,18 +223,71 @@ module Drecs
             raise ArgumentError, "Duplicate component types passed to spawn"
           end
         end
-        components.to_h { |c| [c.class, c] }
+        
+        # Get signature and archetype
+        classes = components.map(&:class)
+        signature = normalize_signature(classes)
+        archetype = find_or_create_archetype(signature)
+        
+        # If the components are already in the correct signature order, we can use add_ordered.
+        # Otherwise, we use the robust hash-based add.
+        if classes == archetype.component_classes
+          row = archetype.add_ordered(entity_id, components)
+        else
+          # Fallback to hash-based add for correct mapping. 
+          # We manually build the hash to avoid the overhead of components.to_h
+          comp_hash = {}
+          Array.each(components) { |c| comp_hash[c.class] = c }
+          row = archetype.add(entity_id, comp_hash)
+        end
       end
 
-      # Find or create the correct archetype
-      signature = normalize_signature(components_hash.keys)
-      archetype = find_or_create_archetype(signature)
-
-      # Add the entity to the archetype and record its location
-      row = archetype.add(entity_id, components_hash)
-      @entity_locations[entity_id] = { archetype: archetype, row: row }
+      @entity_archetypes[entity_id] = archetype
+      @entity_rows[entity_id] = row
+      @entity_count += 1
 
       entity_id
+    end
+
+    # Bulk spawn multiple entities with the same component types.
+    # Significantly faster as it skips signature normalization for each entity.
+    def spawn_many(count, *components)
+      return [] if count <= 0
+
+      classes = components.map(&:class)
+      signature = normalize_signature(classes)
+      archetype = find_or_create_archetype(signature)
+      
+      # Ensure components are in the correct order for the archetype once
+      ordered_components = if classes == archetype.component_classes
+        components
+      else
+        archetype.component_classes.map do |klass|
+          components[classes.index(klass)]
+        end
+      end
+      
+      ids = @entity_manager.batch_create_entities(count)
+      
+      Array.each_with_index(archetype.stores_list) do |store, i|
+        store.concat([ordered_components[i]] * count)
+      end
+      
+      start_row = archetype.entity_ids.length
+      archetype.entity_ids.concat(ids)
+      
+      current_row = start_row
+      i = 0
+      while i < count
+        id = ids[i]
+        @entity_archetypes[id] = archetype
+        @entity_rows[id] = current_row
+        current_row += 1
+        i += 1
+      end
+      
+      @entity_count += count
+      ids
     end
 
     alias_method :create, :spawn
@@ -164,29 +307,25 @@ module Drecs
     def destroy(*entity_ids)
       archetypes_to_cleanup = []
 
-      entity_ids.each do |entity_id|
-        location = @entity_locations[entity_id]
-        next unless location
+      Array.each(entity_ids) do |entity_id|
+        archetype = @entity_archetypes[entity_id]
+        next unless archetype
 
-        archetype = location[:archetype]
-
-        # Remove the entity and capture if another entity was moved to fill the hole
-        removed_row = location[:row]
+        removed_row = @entity_rows[entity_id]
         moved_entity_id, is_empty = archetype.remove(removed_row)
 
-        # If another entity was moved into this row, update its recorded row index
         if moved_entity_id && moved_entity_id != entity_id
-          @entity_locations[moved_entity_id][:row] = removed_row
+          @entity_rows[moved_entity_id] = removed_row
         end
 
-        # Mark archetype for cleanup if it's now empty
         archetypes_to_cleanup << archetype if is_empty
 
         @entity_manager.destroy_entity(entity_id)
-        @entity_locations.delete(entity_id)
+        @entity_archetypes[entity_id] = nil
+        @entity_rows[entity_id] = nil
+        @entity_count -= 1
       end
 
-      # Clean up empty archetypes
       cleanup_empty_archetypes(archetypes_to_cleanup)
     end
 
@@ -196,14 +335,13 @@ module Drecs
     # Adds a component to an existing entity. This triggers a move between archetypes.
     # For hash components, pass a hash like { position: { x: 0, y: 0 } }
     def add_component(entity_id, component_key_or_component, component_value = nil)
-      location = @entity_locations[entity_id]
-      return false unless location
-
-      old_archetype = location[:archetype]
+      old_archetype = @entity_archetypes[entity_id]
+      return false unless old_archetype
 
       # 1. Gather all current components for the entity
+      row = @entity_rows[entity_id]
       all_components = old_archetype.component_classes.to_h do |klass|
-        [klass, old_archetype.component_stores[klass][location[:row]]]
+        [klass, old_archetype.component_stores[klass][row]]
       end
 
       # Handle both hash-style and struct-style components
@@ -223,11 +361,9 @@ module Drecs
 
       # If we're already in the right archetype, just update components in place
       if old_archetype == new_archetype
-        row = location[:row]
-
         if component_value.nil?
           if component_key_or_component.is_a?(Hash)
-            component_key_or_component.each do |k, v|
+            Array.each(component_key_or_component) do |k, v|
               new_archetype.component_stores[k][row] = v
             end
           else
@@ -242,14 +378,15 @@ module Drecs
 
       # 3. Add entity data to the new archetype
       new_row = new_archetype.add(entity_id, all_components)
-      @entity_locations[entity_id] = { archetype: new_archetype, row: new_row }
+      @entity_archetypes[entity_id] = new_archetype
+      @entity_rows[entity_id] = new_row
 
       # 4. Remove the entity from the old archetype, filling the hole
-      moved_entity_id, is_empty = old_archetype.remove(location[:row])
+      moved_entity_id, is_empty = old_archetype.remove(row)
 
       # 5. If another entity was moved to fill the hole, update its location
       if moved_entity_id && moved_entity_id != entity_id
-        @entity_locations[moved_entity_id][:row] = location[:row]
+        @entity_rows[moved_entity_id] = row
       end
 
       # 6. Clean up old archetype if it's now empty
@@ -262,14 +399,13 @@ module Drecs
 
     # Removes a component from an existing entity. This triggers a move between archetypes.
     def remove_component(entity_id, component_class)
-      location = @entity_locations[entity_id]
-      return false unless location # Entity doesn't exist
-
-      old_archetype = location[:archetype]
+      old_archetype = @entity_archetypes[entity_id]
+      return false unless old_archetype
 
       # 1. Gather all current components for the entity
+      row = @entity_rows[entity_id]
       all_components = old_archetype.component_classes.to_h do |klass|
-        [klass, old_archetype.component_stores[klass][location[:row]]]
+        [klass, old_archetype.component_stores[klass][row]]
       end
 
       # If the entity doesn't have the component, nothing to do
@@ -282,14 +418,15 @@ module Drecs
 
       # 3. Add entity data to the new archetype
       new_row = new_archetype.add(entity_id, all_components)
-      @entity_locations[entity_id] = { archetype: new_archetype, row: new_row }
+      @entity_archetypes[entity_id] = new_archetype
+      @entity_rows[entity_id] = new_row
 
       # 4. Remove the entity from the old archetype, filling the hole
-      moved_entity_id, is_empty = old_archetype.remove(location[:row])
+      moved_entity_id, is_empty = old_archetype.remove(row)
 
       # 5. If another entity was moved to fill the hole, update its location
       if moved_entity_id && moved_entity_id != entity_id
-        @entity_locations[moved_entity_id][:row] = location[:row]
+        @entity_rows[moved_entity_id] = row
       end
 
       # 6. Clean up old archetype if it's now empty
@@ -302,16 +439,16 @@ module Drecs
 
     # Check if an entity exists in the world
     def entity_exists?(entity_id)
-      @entity_locations.key?(entity_id)
+      !@entity_archetypes[entity_id].nil?
     end
 
     alias_method :exists?, :entity_exists?
     alias_method :alive?, :entity_exists?
 
     def has_component?(entity_id, component_class)
-      location = @entity_locations[entity_id]
-      return false unless location
-      location[:archetype].component_classes.include?(component_class)
+      archetype = @entity_archetypes[entity_id]
+      return false unless archetype
+      archetype.component_classes.include?(component_class)
     end
 
     alias_method :has?, :has_component?
@@ -319,13 +456,12 @@ module Drecs
 
     # Retrieves a specific component from an entity. Returns nil if entity or component doesn't exist.
     def get_component(entity_id, component_class)
-      location = @entity_locations[entity_id]
-      return nil unless location
-
-      archetype = location[:archetype]
+      archetype = @entity_archetypes[entity_id]
+      return nil unless archetype
+      
       return nil unless archetype.component_classes.include?(component_class)
 
-      archetype.component_stores[component_class][location[:row]]
+      archetype.component_stores[component_class][@entity_rows[entity_id]]
     end
 
     alias_method :get, :get_component
@@ -337,18 +473,18 @@ module Drecs
     # Sets multiple components on an entity in a single operation, avoiding multiple archetype migrations.
     # If the entity doesn't exist, returns false. Components can be added or replaced.
     def set_components(entity_id, *components)
-      location = @entity_locations[entity_id]
-      return false unless location
+      old_archetype = @entity_archetypes[entity_id]
+      return false unless old_archetype
 
-      old_archetype = location[:archetype]
+      row = @entity_rows[entity_id]
 
       # 1. Gather all current components for the entity
       all_components = old_archetype.component_classes.to_h do |klass|
-        [klass, old_archetype.component_stores[klass][location[:row]]]
+        [klass, old_archetype.component_stores[klass][row]]
       end
 
       # 2. Merge in the new components (overwriting any existing ones)
-      components.each do |c|
+      Array.each(components) do |c|
         if c.is_a?(Hash)
           all_components.merge!(c)
         else
@@ -362,11 +498,11 @@ module Drecs
 
       # 4. If we're already in the right archetype, just update components in place
       if old_archetype == new_archetype
-        components.each do |c|
+        Array.each(components) do |c|
           if c.is_a?(Hash)
-            c.each { |k, v| new_archetype.component_stores[k][location[:row]] = v }
+            Array.each(c) { |k, v| new_archetype.component_stores[k][row] = v }
           else
-            new_archetype.component_stores[c.class][location[:row]] = c
+            new_archetype.component_stores[c.class][row] = c
           end
         end
         return true
@@ -374,14 +510,15 @@ module Drecs
 
       # 5. Add entity data to the new archetype
       new_row = new_archetype.add(entity_id, all_components)
-      @entity_locations[entity_id] = { archetype: new_archetype, row: new_row }
+      @entity_archetypes[entity_id] = new_archetype
+      @entity_rows[entity_id] = new_row
 
       # 6. Remove the entity from the old archetype, filling the hole
-      moved_entity_id, is_empty = old_archetype.remove(location[:row])
+      moved_entity_id, is_empty = old_archetype.remove(row)
 
       # 7. If another entity was moved to fill the hole, update its location
       if moved_entity_id && moved_entity_id != entity_id
-        @entity_locations[moved_entity_id][:row] = location[:row]
+        @entity_rows[moved_entity_id] = row
       end
 
       # 8. Clean up old archetype if it's now empty
@@ -423,11 +560,18 @@ module Drecs
       # Normalize query signature and cache it
       query_sig = normalize_signature(required_components)
 
-      # Find all archetypes that contain *at least* the required components
-      @archetypes.each_value do |archetype|
-        # Use Set-like subtraction check: all query components must be in archetype
-        next unless (query_sig - archetype.component_classes).empty?
+      # Use cached matching archetypes if available
+      matching_archetypes = @query_cache[query_sig] ||= @archetypes.values.select do |archetype|
+        (query_sig - archetype.component_classes).empty?
+      end
 
+      # Find all archetypes that contain *at least* the required components
+      i = 0
+      len = matching_archetypes.length
+      while i < len
+        archetype = matching_archetypes[i]
+        i += 1
+        
         # Skip empty archetypes
         next if archetype.entity_ids.empty?
 
@@ -437,6 +581,20 @@ module Drecs
         # Yield entity_ids first, then component arrays for high-speed iteration
         yield(archetype.entity_ids, *stores)
       end
+    end
+
+    # Creates a persistent Query object that avoids signature setup on every call.
+    def query_for(*component_classes, with: nil)
+      with_components = Array(with)
+      required_components = (component_classes + with_components).uniq
+      
+      q = Query.new(self, required_components)
+      @active_queries << q
+      q
+    end
+
+    def archetypes
+      @archetypes
     end
 
     def each_chunk(*component_classes, with: nil, &block)
@@ -480,10 +638,20 @@ module Drecs
       end
 
       query(*component_classes, with: with) do |entity_ids, *stores|
-        # not using Array.each_with_index here because we want to be able to `break` this loop
-        entity_ids.each_with_index do |entity_id, i|
-          components = stores.map { |store| store[i] }
-          yield(entity_id, *components)
+        i = 0
+        len = entity_ids.length
+        num_stores = stores.length
+        
+        while i < len
+          case num_stores
+          when 1 then yield(entity_ids[i], stores[0][i])
+          when 2 then yield(entity_ids[i], stores[0][i], stores[1][i])
+          when 3 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i])
+          when 4 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i], stores[3][i])
+          else
+            yield(entity_ids[i], *stores.map { |s| s[i] })
+          end
+          i += 1
         end
       end
 
@@ -549,13 +717,15 @@ module Drecs
     end
 
     def clear!
-      destroy(*@entity_locations.keys) unless @entity_locations.empty?
+      Array.each(@entity_archetypes) do |arch, id|
+        destroy(id) if arch
+      end
       nil
     end
 
     # Debug/inspection methods for understanding world state
     def entity_count
-      @entity_locations.size
+      @entity_count
     end
 
     def archetype_count
@@ -575,11 +745,16 @@ module Drecs
 
     def find_or_create_archetype(signature)
       normalized = normalize_signature(signature)
-      @archetypes[normalized] ||= Archetype.new(normalized)
+      if !@archetypes.key?(normalized)
+        @archetypes[normalized] = Archetype.new(normalized)
+        @query_cache.clear
+        Array.each(@active_queries) { _1.refresh! }
+      end
+      @archetypes[normalized]
     end
 
     def cleanup_empty_archetypes(archetypes)
-      archetypes.each do |archetype|
+      Array.each(archetypes) do |archetype|
         next unless archetype.entity_ids.empty?
         signature = archetype.component_classes
         @archetypes.delete(signature)
