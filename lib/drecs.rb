@@ -97,7 +97,26 @@ module Drecs
     end
 
     def flush_defer!
-      @deferred.each { _1.call(self) }
+      deferred = @deferred
+      @deferred = []
+      deferred.each { _1.call(self) }
+      nil
+    end
+
+    def systems
+      @systems
+    end
+
+    def add_system(system = nil, &blk)
+      system ||= blk
+      return nil unless system
+      @systems << system
+      system
+    end
+
+    def tick(args)
+      Array.each { _1.call(self, args) }
+      nil
     end
 
     # Creates a new entity with the given components.
@@ -127,6 +146,8 @@ module Drecs
 
       entity_id
     end
+
+    alias_method :create, :spawn
 
     # Alias for spawn using the << operator for a more fluid API
     # Examples:
@@ -168,6 +189,9 @@ module Drecs
       # Clean up empty archetypes
       cleanup_empty_archetypes(archetypes_to_cleanup)
     end
+
+    alias_method :delete, :destroy
+    alias_method :despawn, :destroy
     
     # Adds a component to an existing entity. This triggers a move between archetypes.
     # For hash components, pass a hash like { position: { x: 0, y: 0 } }
@@ -197,6 +221,25 @@ module Drecs
       new_signature = normalize_signature(all_components.keys)
       new_archetype = find_or_create_archetype(new_signature)
 
+      # If we're already in the right archetype, just update components in place
+      if old_archetype == new_archetype
+        row = location[:row]
+
+        if component_value.nil?
+          if component_key_or_component.is_a?(Hash)
+            component_key_or_component.each do |k, v|
+              new_archetype.component_stores[k][row] = v
+            end
+          else
+            new_archetype.component_stores[component_key_or_component.class][row] = component_key_or_component
+          end
+        else
+          new_archetype.component_stores[component_key_or_component][row] = component_value
+        end
+
+        return true
+      end
+
       # 3. Add entity data to the new archetype
       new_row = new_archetype.add(entity_id, all_components)
       @entity_locations[entity_id] = { archetype: new_archetype, row: new_row }
@@ -214,6 +257,8 @@ module Drecs
 
       true
     end
+
+    alias_method :add, :add_component
 
     # Removes a component from an existing entity. This triggers a move between archetypes.
     def remove_component(entity_id, component_class)
@@ -253,16 +298,24 @@ module Drecs
       true
     end
 
+    alias_method :remove, :remove_component
+
     # Check if an entity exists in the world
     def entity_exists?(entity_id)
       @entity_locations.key?(entity_id)
     end
+
+    alias_method :exists?, :entity_exists?
+    alias_method :alive?, :entity_exists?
 
     def has_component?(entity_id, component_class)
       location = @entity_locations[entity_id]
       return false unless location
       location[:archetype].component_classes.include?(component_class)
     end
+
+    alias_method :has?, :has_component?
+    alias_method :component?, :has_component?
 
     # Retrieves a specific component from an entity. Returns nil if entity or component doesn't exist.
     def get_component(entity_id, component_class)
@@ -273,6 +326,12 @@ module Drecs
       return nil unless archetype.component_classes.include?(component_class)
 
       archetype.component_stores[component_class][location[:row]]
+    end
+
+    alias_method :get, :get_component
+
+    def [](entity_id, component_class)
+      get_component(entity_id, component_class)
     end
 
     # Sets multiple components on an entity in a single operation, avoiding multiple archetype migrations.
@@ -331,14 +390,38 @@ module Drecs
       true
     end
 
+    alias_method :set, :set_components
+    alias_method :upsert, :set_components
+
+    def set_component(entity_id, component_key_or_component, component_value = nil)
+      if component_value.nil?
+        set_components(entity_id, component_key_or_component)
+      else
+        set_components(entity_id, { component_key_or_component => component_value })
+      end
+    end
+
+    def []=(entity_id, component_class, component_value)
+      set_component(entity_id, component_class, component_value)
+    end
+
     # The query interface for systems.
     # Yields entity_ids array first, followed by component arrays.
-    def query(*component_classes, &block)
+    def query(*component_classes, with: nil, &block)
       # If no block is given, return an enumerator that will yield the same values.
-      return to_enum(:query, *component_classes) unless block_given?
+      unless block_given?
+        return Enumerator.new do |yielder|
+          query(*component_classes, with: with) do |*args|
+            yielder.yield(*args)
+          end
+        end
+      end
+
+      with_components = Array(with)
+      required_components = (component_classes + with_components).uniq
 
       # Normalize query signature and cache it
-      query_sig = normalize_signature(component_classes)
+      query_sig = normalize_signature(required_components)
 
       # Find all archetypes that contain *at least* the required components
       @archetypes.each_value do |archetype|
@@ -356,13 +439,47 @@ module Drecs
       end
     end
 
+    def each_chunk(*component_classes, with: nil, &block)
+      unless block_given?
+        return Enumerator.new do |yielder|
+          each_chunk(*component_classes, with: with) do |*args|
+            yielder.yield(*args)
+          end
+        end
+      end
+
+      query(*component_classes, with: with, &block)
+    end
+
+    def count(*component_classes, with: nil)
+      total = 0
+      query(*component_classes, with: with) do |entity_ids, *stores|
+        total += entity_ids.length
+      end
+      total
+    end
+
+    def ids(*component_classes, with: nil)
+      all_ids = []
+      query(*component_classes, with: with) do |entity_ids, *stores|
+        all_ids.concat(entity_ids)
+      end
+      all_ids
+    end
+
     # Iterates over each entity that has the specified components, yielding the entity_id
     # and the requested components as individual values (not arrays).
     # More ergonomic than query() for per-entity iteration.
-    def each_entity(*component_classes, &block)
-      return to_enum(:each_entity, *component_classes) unless block_given?
+    def each_entity(*component_classes, with: nil, &block)
+      unless block_given?
+        return Enumerator.new do |yielder|
+          each_entity(*component_classes, with: with) do |*args|
+            yielder.yield(*args)
+          end
+        end
+      end
 
-      query(*component_classes) do |entity_ids, *stores|
+      query(*component_classes, with: with) do |entity_ids, *stores|
         # not using Array.each_with_index here because we want to be able to `break` this loop
         entity_ids.each_with_index do |entity_id, i|
           components = stores.map { |store| store[i] }
@@ -373,11 +490,13 @@ module Drecs
       flush_defer!
     end
 
+    alias_method :each, :each_entity
+
     # Finds the first entity that has the specified components.
     # Returns [entity_id, component1, component2, ...] or nil if no match found.
     # If a block is given, yields the entity_id and components, returning the entity_id.
-    def first_entity(*component_classes, &block)
-      query(*component_classes) do |entity_ids, *stores|
+    def first_entity(*component_classes, with: nil, &block)
+      query(*component_classes, with: with) do |entity_ids, *stores|
         next if entity_ids.empty?
 
         entity_id = entity_ids[0]
@@ -394,6 +513,8 @@ module Drecs
       # No matching entity found
       nil
     end
+
+    alias_method :first, :first_entity
 
     # Removes components from a passed query
     # This is safe to use during iteration since it collects entities first.
@@ -414,8 +535,22 @@ module Drecs
     end
 
     # Convenience wrapper for destroying all entities matching a query signature.
-    def destroy_query(*component_classes)
-      destroy_from_query(query(*component_classes))
+    def destroy_query(*component_classes, with: nil)
+      destroy_from_query(query(*component_classes, with: with))
+    end
+
+    alias_method :destroy_all, :destroy_query
+
+    def remove_all(component, where: nil)
+      query_components = Array(where)
+      query_components << component unless query_components.include?(component)
+      remove_components_from_query(query(*query_components), component)
+      nil
+    end
+
+    def clear!
+      destroy(*@entity_locations.keys) unless @entity_locations.empty?
+      nil
     end
 
     # Debug/inspection methods for understanding world state

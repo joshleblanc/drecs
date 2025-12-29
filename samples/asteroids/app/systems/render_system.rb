@@ -35,7 +35,7 @@ class RenderSystem
       r: 255, g: 255, b: 255
     }
 
-    asteroids_count = world.query(Asteroid).count
+    asteroids_count = world.count(Asteroid)
     args.outputs.labels << {
       x: 10, y: 670,
       text: "Asteroids: #{asteroids_count}",
