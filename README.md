@@ -89,6 +89,16 @@ enemy_id = world.spawn(
 )
 ```
 
+### Bulk Creation
+
+```ruby
+world.spawn_many(10_000,
+  Position.new(0, 0),
+  Velocity.new(1, 1),
+  Particle.new
+)
+```
+
 ### Managing Components
 
 ```ruby
@@ -126,12 +136,26 @@ The `query` method returns component arrays for high-performance batch processin
 # Query yields entity_ids first, then component arrays
 world.query(Position, Velocity) do |entity_ids, positions, velocities|
   # Arrays are aligned by index
-  positions.each_with_index do |pos, i|
+  i = 0
+  while i < entity_ids.length
+    pos = positions[i]
     vel = velocities[i]
-    entity_id = entity_ids[i]
     pos.x += vel.dx
     pos.y += vel.dy
+    i += 1
   end
+end
+```
+
+For maximum performance in hot loops (e.g., systems running every frame), use `query_for` to pre-cache the query structure. This avoids signature normalization and hash lookups entirely during iteration.
+
+```ruby
+# In your system initialization:
+@movement_query = world.query_for(Position, Velocity)
+
+# In your tick/update method:
+@movement_query.each do |entity_ids, positions, velocities|
+  # ... tight loop logic ...
 end
 ```
 
@@ -278,7 +302,7 @@ See the `samples` directory for complete examples:
 - **snake** - Complete game built using hash components (great for MVPs and rapid prototyping)
 - **tetris** - Classic Tetris implementation with hash components
 - **flappy** - Flappy Bird clone using hash components with dynamic pipe spawning
-- **performance** - Interactive benchmarking suite showing performance at various scales (1K-20K entities)
+- **performance** - Interactive benchmarking suite showing performance at scale (up to 100k entities)
 
 ## Development
 

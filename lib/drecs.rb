@@ -249,8 +249,6 @@ module Drecs
       entity_id
     end
 
-    # Bulk spawn multiple entities with the same component types.
-    # Significantly faster as it skips signature normalization for each entity.
     def spawn_many(count, *components)
       return [] if count <= 0
 
@@ -270,7 +268,8 @@ module Drecs
       ids = @entity_manager.batch_create_entities(count)
       
       Array.each_with_index(archetype.stores_list) do |store, i|
-        store.concat([ordered_components[i]] * count)
+        proto = ordered_components[i]
+        count.times { store << proto.dup }
       end
       
       start_row = archetype.entity_ids.length
@@ -545,13 +544,11 @@ module Drecs
     # The query interface for systems.
     # Yields entity_ids array first, followed by component arrays.
     def query(*component_classes, with: nil, &block)
-      # If no block is given, return an enumerator that will yield the same values.
+      # If no block is given, return an enumerator that will yield single entities.
+      # This provides an ergonomic "AoS" view (e.g. query(A).first -> [id, a])
+      # while keeping the optimized "SoA" view for the block form.
       unless block_given?
-        return Enumerator.new do |yielder|
-          query(*component_classes, with: with) do |*args|
-            yielder.yield(*args)
-          end
-        end
+        return each_entity(*component_classes, with: with)
       end
 
       with_components = Array(with)
