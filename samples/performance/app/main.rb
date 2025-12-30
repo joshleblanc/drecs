@@ -17,6 +17,12 @@ SCENARIOS = [
   { name: "100K Entities - System (3 Components)", count: 100000, system_3comp: true }
 ]
 
+def monotonic_time
+  Process.clock_gettime(Process::CLOCK_MONOTONIC)
+rescue StandardError
+  Time.now.to_f
+end
+
 def tick(args)
   args.state.scenario_index ||= 0
   args.state.warmup_frames ||= 0
@@ -105,7 +111,7 @@ def run_benchmark(args)
   end
 
   if args.state.benchmark_frames < 300
-    start_time = Time.now
+    start_time = monotonic_time
 
     if scenario[:creation_only]
       setup_scenario(args, scenario)
@@ -113,8 +119,8 @@ def run_benchmark(args)
       perform_scenario_work(args, scenario, world)
     end
 
-    end_time = Time.now
-    frame_time = (end_time - start_time) * 1000
+    end_time = monotonic_time
+    frame_time = (end_time - start_time) * 1000.0
     args.state.frame_times << frame_time
     args.state.benchmark_frames += 1
 
@@ -167,12 +173,15 @@ def perform_scenario_work(args, scenario, world)
 
   if scenario[:complex] || scenario[:system_3comp]
     args.state.health_damage_query.each do |entity_ids, healths, damages|
+      scale = 0.01
       i = 0
       len = healths.length
       while i < len
         health = healths[i]
         damage = damages[i]
-        health.current = [health.current - damage.value * 0.01, 0].max
+        v = health.current - damage.value * scale
+        v = 0 if v < 0
+        health.current = v
         health.current = health.max if health.current == 0
         i += 1
       end

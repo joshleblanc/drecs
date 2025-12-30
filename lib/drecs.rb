@@ -30,21 +30,38 @@ module Drecs
 
     def batch_create_entities(count)
       return [] if count <= 0
-      
-      ids = []
+
+      total = count
+      ids = Array.new(total)
+      idx = 0
+
       if @freed_ids && !@freed_ids.empty?
-        pop_count = [count, @freed_ids.length].min
-        ids.concat(@freed_ids.pop(pop_count))
+        pop_count = total < @freed_ids.length ? total : @freed_ids.length
+        popped = @freed_ids.pop(pop_count)
+
+        j = 0
+        popped_len = popped.length
+        while j < popped_len
+          ids[idx] = popped[j]
+          idx += 1
+          j += 1
+        end
+
         count -= pop_count
       end
 
       if count > 0
-        start_id = @next_id
-        @next_id += count
-        # this is faster than just splatting it into the array for some reason
-        (start_id...start_id + count).each { |i| ids << i }
+        next_id = @next_id
+        @next_id = next_id + count
+
+        while count > 0
+          ids[idx] = next_id
+          idx += 1
+          next_id += 1
+          count -= 1
+        end
       end
-      
+
       ids
     end
   end
@@ -67,14 +84,31 @@ module Drecs
       @cached_stores = []
 
       @world.archetypes.each_value do |archetype|
-        if (@signature - archetype.component_classes).empty?
+        stores_hash = archetype.component_stores
+        sig = @signature
+        j = 0
+        sig_len = sig.length
+        matches = true
+        while j < sig_len
+          unless stores_hash.key?(sig[j])
+            matches = false
+            break
+          end
+          j += 1
+        end
+
+        if matches
           @matching_archetypes << archetype
           
           # Pre-calculate the exact arrays we need to yield
-          indices = Array.map(@component_classes) { |klass|
-            archetype.component_classes.index(klass)
-          }
-          stores = indices.map { |idx| archetype.stores_list[idx] }
+          classes = @component_classes
+          stores = Array.new(classes.length)
+          k = 0
+          k_len = classes.length
+          while k < k_len
+            stores[k] = stores_hash[classes[k]]
+            k += 1
+          end
           @cached_stores << stores
         end
       end
@@ -89,7 +123,21 @@ module Drecs
         
         # Skip empty archetypes
         unless ids.empty?
-          yield(ids, *@cached_stores[i])
+          stores = @cached_stores[i]
+          case stores.length
+          when 0
+            yield(ids)
+          when 1
+            yield(ids, stores[0])
+          when 2
+            yield(ids, stores[0], stores[1])
+          when 3
+            yield(ids, stores[0], stores[1], stores[2])
+          when 4
+            yield(ids, stores[0], stores[1], stores[2], stores[3])
+          else
+            yield(ids, *stores)
+          end
         end
         
         i += 1
@@ -104,7 +152,7 @@ module Drecs
 
     def initialize(component_classes)
       # The signature of the archetype, always sorted for consistent lookup.
-      @component_classes = normalize_signature(component_classes)
+      @component_classes = component_classes.frozen? ? component_classes : normalize_signature(component_classes)
       @component_stores = @component_classes.to_h { |klass| [klass, []] }
       @stores_list = @component_classes.map { |k| @component_stores[k] } # Fast array access
       @entity_ids = [] # Maps row index to the entity ID at that row
@@ -112,8 +160,14 @@ module Drecs
 
     # Adds an entity's data to this archetype.
     def add(entity_id, components_hash)
-      @component_classes.each do |klass|
-        @component_stores[klass] << components_hash[klass]
+      classes = @component_classes
+      stores = @stores_list
+      i = 0
+      len = stores.length
+      while i < len
+        klass = classes[i]
+        stores[i] << components_hash[klass]
+        i += 1
       end
       @entity_ids << entity_id
       @entity_ids.length - 1 # Return the new row index
@@ -123,8 +177,12 @@ module Drecs
     def add_ordered(entity_id, components_array)
       # WARNING: This assumes components_array is in the correct order as @component_classes
       # and matches the length exactly.
-      @component_classes.each_with_index do |klass, i|
-        @component_stores[klass] << components_array[i]
+      stores = @stores_list
+      i = 0
+      len = stores.length
+      while i < len
+        stores[i] << components_array[i]
+        i += 1
       end
       @entity_ids << entity_id
       @entity_ids.length - 1
@@ -133,25 +191,34 @@ module Drecs
     # Removes an entity from a specific row. This is a critical performance path.
     # Returns [moved_entity_id, is_empty] where is_empty indicates if the archetype is now empty.
     def remove(row_index)
-      last_entity_id = @entity_ids.last
+      ids = @entity_ids
+      last_idx = ids.length - 1
+      last_entity_id = ids[last_idx]
+
+      stores = @stores_list
 
       # To avoid leaving a hole, we move the *last* element into the deleted slot.
-      if @entity_ids.length > 1 && row_index != @entity_ids.length - 1
-        # Move data from the last row into the now-vacant row
-        @component_classes.each do |klass|
-          @component_stores[klass][row_index] = @component_stores[klass].last
+      if last_idx > 0 && row_index != last_idx
+        i = 0
+        len = stores.length
+        while i < len
+          store = stores[i]
+          store[row_index] = store[last_idx]
+          i += 1
         end
-        @entity_ids[row_index] = last_entity_id
+        ids[row_index] = last_entity_id
       end
 
-      # Pop the last (now redundant) element off all arrays.
-      @component_classes.each { |klass| @component_stores[klass].pop }
-      @entity_ids.pop
+      i = 0
+      len = stores.length
+      while i < len
+        stores[i].pop
+        i += 1
+      end
+      ids.pop
 
-      # Return the ID of the entity that was moved so the World can update its location.
-      # If no entity was moved (because we removed the last one), this is nil.
-      moved_entity = @entity_ids.length > row_index ? last_entity_id : nil
-      [moved_entity, @entity_ids.empty?]
+      moved_entity = ids.length > row_index ? last_entity_id : nil
+      [moved_entity, ids.empty?]
     end
   end
 
@@ -202,7 +269,7 @@ module Drecs
     end
 
     def tick(args)
-      Array.each { _1.call(self, args) }
+      Array.each(@systems) { _1.call(self, args) }
       nil
     end
 
@@ -266,10 +333,23 @@ module Drecs
       end
       
       ids = @entity_manager.batch_create_entities(count)
-      
-      Array.each_with_index(archetype.stores_list) do |store, i|
-        proto = ordered_components[i]
-        count.times { store << proto.dup }
+
+      stores_list = archetype.stores_list
+      store_i = 0
+      store_len = stores_list.length
+      while store_i < store_len
+        store = stores_list[store_i]
+        proto = ordered_components[store_i]
+
+        base = store.length
+        store[base + count - 1] = nil
+        j = 0
+        while j < count
+          store[base + j] = proto.dup
+          j += 1
+        end
+
+        store_i += 1
       end
       
       start_row = archetype.entity_ids.length
@@ -447,7 +527,7 @@ module Drecs
     def has_component?(entity_id, component_class)
       archetype = @entity_archetypes[entity_id]
       return false unless archetype
-      archetype.component_classes.include?(component_class)
+      archetype.component_stores.key?(component_class)
     end
 
     alias_method :has?, :has_component?
@@ -458,7 +538,7 @@ module Drecs
       archetype = @entity_archetypes[entity_id]
       return nil unless archetype
       
-      return nil unless archetype.component_classes.include?(component_class)
+      return nil unless archetype.component_stores.key?(component_class)
 
       archetype.component_stores[component_class][@entity_rows[entity_id]]
     end
@@ -559,7 +639,18 @@ module Drecs
 
       # Use cached matching archetypes if available
       matching_archetypes = @query_cache[query_sig] ||= @archetypes.values.select do |archetype|
-        (query_sig - archetype.component_classes).empty?
+        stores_hash = archetype.component_stores
+        j = 0
+        lenj = query_sig.length
+        ok = true
+        while j < lenj
+          unless stores_hash.key?(query_sig[j])
+            ok = false
+            break
+          end
+          j += 1
+        end
+        ok
       end
 
       # Find all archetypes that contain *at least* the required components
@@ -741,7 +832,7 @@ module Drecs
     private
 
     def find_or_create_archetype(signature)
-      normalized = normalize_signature(signature)
+      normalized = signature.frozen? ? signature : normalize_signature(signature)
       if !@archetypes.key?(normalized)
         @archetypes[normalized] = Archetype.new(normalized)
         @query_cache.clear
