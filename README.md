@@ -8,6 +8,7 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 - **High-speed queries** - Pre-computed component stores eliminate hash lookups in hot paths
 - **Query filters** - `without:` and `any:` allow expressive filtering without manual branching
 - **Change detection** - `changed:` filtering enables efficient incremental updates
+- **Event system** - `send_event` / `each_event` / `clear_events!` for decoupled system communication
 - **Automatic archetype cleanup** - Empty archetypes are removed to prevent memory growth
 - **Flexible component operations** - Add, remove, or batch-update components with archetype migration
 - **Debug/inspection tools** - Built-in methods to understand world state and performance
@@ -212,6 +213,36 @@ end
 ```
 
 If you use `world.tick(args)` to run systems, it automatically calls `advance_change_tick!` once per tick.
+
+#### Events
+
+Events provide a lightweight way for systems to communicate without direct coupling.
+
+Events are buffered by type/key, can be iterated deterministically, and can be cleared explicitly.
+
+```ruby
+DamageEvent = Struct.new(:target_id, :amount)
+
+# Send an event (keyed by class)
+world.send_event(DamageEvent.new(enemy_id, 5))
+
+# Send an event (keyed by symbol)
+world.send_event(:log, { msg: "hit!" })
+
+# Drain/iterate events
+world.each_event(DamageEvent) do |evt|
+  puts "Damage #{evt.target_id} for #{evt.amount}"
+end
+
+# Clear events (all types)
+world.clear_events!
+
+# Clear only one event type
+world.clear_events!(DamageEvent)
+```
+
+By default, events are cleared when the world advances its change tick.
+This means that if you call `world.tick(args)` (or call `advance_change_tick!` once per frame), events are naturally scoped to a single tick.
 
 #### Deferring World Mutations During Iteration
 
