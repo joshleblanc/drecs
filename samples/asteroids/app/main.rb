@@ -14,18 +14,34 @@ require_relative 'systems/render_system.rb'
 
 def tick(args)
   args.state.world ||= setup_world(args)
-  args.state.systems ||= setup_systems
+  setup_schedule(args) unless args.state.schedule_initialized
 
   if args.state.game_over
     if args.inputs.keyboard.key_down.r
       args.state.world = setup_world(args)
       args.state.game_over = false
+      args.state.schedule_initialized = false
+      setup_schedule(args)
     end
-  else
-    args.state.systems.each { |system| system.call(args.state.world, args) }
   end
 
-  args.state.systems.last.call(args.state.world, args)
+  args.state.world.tick(args)
+end
+
+def setup_schedule(args)
+  world = args.state.world
+  world.clear_schedule!
+
+  run_sim = ->(_w, a) { !a.state.game_over }
+
+  world.add_system(:input, if: run_sim, system: PlayerInputSystem.new)
+  world.add_system(:movement, after: :input, if: run_sim, system: MovementSystem.new)
+  world.add_system(:bullets, after: :movement, if: run_sim, system: BulletSystem.new)
+  world.add_system(:collision, after: :bullets, if: run_sim, system: CollisionSystem.new)
+  world.add_system(:render, after: :collision, system: RenderSystem.new)
+
+  args.state.schedule_initialized = true
+  nil
 end
 
 def setup_world(args)
@@ -52,6 +68,7 @@ def setup_world(args)
   end
 
   args.state.score = 0
+  args.state.game_over = false
 
   world
 end

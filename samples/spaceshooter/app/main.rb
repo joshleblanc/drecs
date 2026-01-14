@@ -37,23 +37,20 @@ def boot(args)
     )
   end
 
-  args.state.systems = [
-    PlayerInputSystem.new,
-    EnemyAISystem.new,
-    MovementSystem.new,
-    CollisionSystem.new,
-    HitEventSystem.new,
-    LifetimeSystem.new,
-    RenderSystem.new
-  ]
+  world = args.state.world
+  world.clear_schedule!
+  world.add_system(:input, system: PlayerInputSystem.new)
+  world.add_system(:enemy_ai, after: :input, system: EnemyAISystem.new)
+  world.add_system(:movement, after: :enemy_ai, system: MovementSystem.new)
+  world.add_system(:collision, after: :movement, system: CollisionSystem.new)
+  world.add_system(:hit_events, after: :collision, system: HitEventSystem.new)
+  world.add_system(:lifetime, after: :hit_events, system: LifetimeSystem.new)
+  world.add_system(:render, after: :lifetime, system: RenderSystem.new)
 end
 
 def tick(args)
-  args.state.world.advance_change_tick!
-
-  Array.each(args.state.systems) do |system|
-    system.call(args.state.world, args)
-  end
+  boot(args) unless args.state.world
+  args.state.world.tick(args)
 
   args.outputs.labels << {
     x: 10,

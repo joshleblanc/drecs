@@ -367,6 +367,9 @@ module Drecs
     def initialize(reuse_entity_ids: true, validate_components: false)
       @entity_manager = EntityManager.new(reuse_entity_ids: reuse_entity_ids)
       @systems = []
+      @scheduled_systems = {}
+      @compiled_schedule = nil
+      @schedule_dirty = false
 
       @change_tick = 0
 
@@ -404,11 +407,89 @@ module Drecs
       @systems
     end
 
-    def add_system(system = nil, &blk)
-      system ||= blk
-      return nil unless system
-      @systems << system
-      system
+    def add_system(system = nil, after: nil, before: nil, **kwargs, &blk)
+      if (system.is_a?(Symbol) || system.is_a?(String))
+        name = system.to_sym
+        callable = blk || kwargs[:system]
+        return nil unless callable
+
+        if_condition = kwargs[:if] || kwargs[:run_if]
+
+        @scheduled_systems[name] = {
+          name: name,
+          callable: callable,
+          after: Array(after).compact.map(&:to_sym),
+          before: Array(before).compact.map(&:to_sym),
+          if: if_condition
+        }
+        @schedule_dirty = true
+        callable
+      else
+        system ||= blk
+        return nil unless system
+        @systems << system
+        system
+      end
+    end
+
+    def clear_schedule!
+      @scheduled_systems.clear
+      @compiled_schedule = nil
+      @schedule_dirty = false
+      nil
+    end
+
+    def compile_schedule!
+      systems = @scheduled_systems
+      names = systems.keys
+      return [] if names.empty?
+
+      adjacency = {}
+      indegree = {}
+
+      Array.each(names) do |n|
+        adjacency[n] = []
+        indegree[n] = 0
+      end
+
+      Array.each(names) do |n|
+        rec = systems[n]
+
+        Array.each(rec[:after]) do |dep|
+          raise ArgumentError, "Unknown system referenced: #{dep}" unless systems.key?(dep)
+          adjacency[dep] << n
+          indegree[n] += 1
+        end
+
+        Array.each(rec[:before]) do |dep|
+          raise ArgumentError, "Unknown system referenced: #{dep}" unless systems.key?(dep)
+          adjacency[n] << dep
+          indegree[dep] += 1
+        end
+      end
+
+      order = []
+      queue = []
+      Array.each(names) { |n| queue << n if indegree[n] == 0 }
+
+      until queue.empty?
+        n = queue.shift
+        order << n
+        Array.each(adjacency[n]) do |m|
+          indegree[m] -= 1
+          queue << m if indegree[m] == 0
+        end
+      end
+
+      if order.length != names.length
+        raise ArgumentError, "System schedule has a cycle"
+      end
+
+      order
+    end
+
+    def scheduled?
+      !@scheduled_systems.empty?
     end
 
     def change_tick
@@ -422,6 +503,21 @@ module Drecs
 
     def tick(args)
       advance_change_tick!
+
+      if scheduled?
+        if @schedule_dirty || @compiled_schedule.nil?
+          @compiled_schedule = compile_schedule!
+          @schedule_dirty = false
+        end
+
+        Array.each(@compiled_schedule) do |name|
+          rec = @scheduled_systems[name]
+          cond = rec[:if]
+          next if cond && !cond.call(self, args)
+          rec[:callable].call(self, args)
+        end
+      end
+
       Array.each(@systems) { _1.call(self, args) }
       nil
     end

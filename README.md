@@ -9,6 +9,8 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 - **Query filters** - `without:` and `any:` allow expressive filtering without manual branching
 - **Change detection** - `changed:` filtering enables efficient incremental updates
 - **Event system** - `send_event` / `each_event` / `clear_events!` for decoupled system communication
+- **Bundles** - Precomputed signatures for common spawns via `Drecs.bundle` and `spawn_bundle`
+- **System scheduling** - Named systems with `after:`/`before:` ordering and `if:` run conditions
 - **Automatic archetype cleanup** - Empty archetypes are removed to prevent memory growth
 - **Flexible component operations** - Add, remove, or batch-update components with archetype migration
 - **Debug/inspection tools** - Built-in methods to understand world state and performance
@@ -100,6 +102,44 @@ world.spawn_many(10_000,
   Velocity.new(1, 1),
   Particle.new
 )
+```
+
+### Bundles
+
+Bundles are a way to predefine common component sets (archetypes) so repeated spawns avoid repeated signature work.
+
+```ruby
+PlayerBundle = Drecs.bundle(Position, Velocity, Health)
+
+player_id = world.spawn_bundle(PlayerBundle,
+  Position.new(0, 0),
+  Velocity.new(0, 0),
+  Health.new(10, 10)
+)
+```
+
+You can also use the block form:
+
+```ruby
+PlayerBundle = Drecs.bundle(Position, Velocity, Health)
+
+player_id = world.spawn_bundle(PlayerBundle) do |b|
+  b[Position] = Position.new(0, 0)
+  b[Velocity] = Velocity.new(0, 0)
+  b[Health] = Health.new(10, 10)
+end
+```
+
+Bundles work with hash/symbol components too:
+
+```ruby
+ActorBundle = Drecs.bundle(:position, :velocity, :sprite)
+
+id = world.spawn_bundle(ActorBundle, {
+  position: { x: 100, y: 200 },
+  velocity: { dx: 1, dy: 0 },
+  sprite: { r: 255, g: 255, b: 255 }
+})
 ```
 
 ### Managing Components
@@ -379,6 +419,33 @@ world.remove_resource(GameTime)
 world.remove_resource(:score)
 ```
 
+### System Scheduling and Run Conditions
+
+You can register named systems on the world and let `world.tick(args)` run them in a deterministic order.
+
+```ruby
+world.add_system(:input) { |w, args| }
+world.add_system(:movement, after: :input) { |w, args| }
+world.add_system(:render, after: :movement) { |w, args| }
+
+world.tick(args)
+```
+
+Run conditions can be provided with `if:`:
+
+```ruby
+world.insert_resource(:paused, false)
+
+world.add_system(:movement,
+  after: :input,
+  if: ->(w, _args) { !w.resource(:paused) }
+) do |w, args|
+  # ...
+end
+```
+
+If you don't use named scheduled systems, `world.tick(args)` will continue to run any systems added via the original `add_system(callable)` API.
+
 ## Performance Tips
 
 1. **Use `query` for batch operations** - When processing many entities, `query` is faster than `each_entity` because it works with raw arrays
@@ -415,11 +482,12 @@ require_relative 'systems/movement_system.rb'
 
 def boot(args)
   args.state.world = Drecs::World.new
-  args.state.systems = [MovementSystem.new]
+  args.state.world.clear_schedule!
+  args.state.world.add_system(:movement, system: MovementSystem.new)
 end
 
 def tick(args)
-  args.state.systems.each { |sys| sys.call(args.state.world, args) }
+  args.state.world.tick(args)
 end
 ```
 
@@ -427,12 +495,12 @@ end
 
 See the `samples` directory for complete examples:
 
-- **trivial** - Basic ECS usage demonstrating core concepts
-- **boids** - High-performance flocking simulation with 2500+ entities
+- **trivial** - Basic ECS usage demonstrating core concepts, including scheduling and run conditions
+- **boids** - High-performance flocking simulation with 2500+ entities (uses bundles)
 - **ants** - Ant colony simulation with pheromones and state machines
-- **avoider** - Arcade micro-game demonstrating `without:`/`any:` query filters and `changed:`-driven incremental rendering
-- **spaceshooter** - Multi-file project structure with separate component and system files
-- **asteroids** - Classic Asteroids game with multi-file architecture (components and systems)
+- **avoider** - Arcade micro-game demonstrating `without:`/`any:` query filters, `changed:`-driven incremental rendering, and bundles
+- **spaceshooter** - Multi-file project structure with separate component and system files (uses bundles, events, and scheduling)
+- **asteroids** - Classic Asteroids game with multi-file architecture (uses scheduling and run conditions)
 - **snake** - Complete game built using hash components (great for MVPs and rapid prototyping)
 - **tetris** - Classic Tetris implementation with hash components
 - **flappy** - Flappy Bird clone using hash components with dynamic pipe spawning
