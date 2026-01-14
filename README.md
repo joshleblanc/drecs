@@ -6,6 +6,8 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 
 - **Archetype-based storage** - Entities with the same component signatures are stored together for cache-friendly iteration
 - **High-speed queries** - Pre-computed component stores eliminate hash lookups in hot paths
+- **Query filters** - `without:` and `any:` allow expressive filtering without manual branching
+- **Change detection** - `changed:` filtering enables efficient incremental updates
 - **Automatic archetype cleanup** - Empty archetypes are removed to prevent memory growth
 - **Flexible component operations** - Add, remove, or batch-update components with archetype migration
 - **Debug/inspection tools** - Built-in methods to understand world state and performance
@@ -175,6 +177,41 @@ world.each_entity(Health, Enemy) do |entity_id, health|
   end
 end
 ```
+
+#### Query Filters
+
+You can filter queries without per-entity `has_component?` checks:
+
+```ruby
+# Entities with Position but without Velocity
+world.each_entity(Position, without: Velocity) do |entity_id, pos|
+  # ...
+end
+
+# Entities with Position and (Player OR Enemy)
+world.query(Position, any: [Player, Enemy]) do |entity_ids, positions|
+  # ...
+end
+```
+
+#### Change Detection
+
+You can query for entities whose components changed on the current change tick:
+
+```ruby
+# Advance the change tick once per frame (if you are not calling world.tick(args))
+world.advance_change_tick!
+
+# Mutations mark components as changed for the current tick
+world.set_component(entity_id, Position.new(10, 10))
+
+# Only entities whose Position changed this tick
+world.each_entity(Position, changed: [Position]) do |id, pos|
+  # ...
+end
+```
+
+If you use `world.tick(args)` to run systems, it automatically calls `advance_change_tick!` once per tick.
 
 #### Deferring World Mutations During Iteration
 
@@ -362,6 +399,7 @@ See the `samples` directory for complete examples:
 - **trivial** - Basic ECS usage demonstrating core concepts
 - **boids** - High-performance flocking simulation with 2500+ entities
 - **ants** - Ant colony simulation with pheromones and state machines
+- **avoider** - Arcade micro-game demonstrating `without:`/`any:` query filters and `changed:`-driven incremental rendering
 - **spaceshooter** - Multi-file project structure with separate component and system files
 - **asteroids** - Classic Asteroids game with multi-file architecture (components and systems)
 - **snake** - Complete game built using hash components (great for MVPs and rapid prototyping)
@@ -378,6 +416,7 @@ To run samples, use DragonRuby with the appropriate sample argument:
 dragonruby . --sample boids
 dragonruby . --sample ants
 dragonruby . --sample trivial
+dragonruby . --sample avoider
 ```
 
 ## Contributing
