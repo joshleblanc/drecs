@@ -142,18 +142,18 @@ end
 
 def perform_scenario_work(args, scenario, world)
   if scenario[:migration]
-    entities_to_modify = []
-    world.each_entity(Position) do |entity_id, pos|
-      entities_to_modify << entity_id if rand < 0.01
+    to_remove = []
+    world.each_entity(Position, Health) do |entity_id, _pos, _health|
+      to_remove << entity_id if rand < 0.01
     end
 
-    entities_to_modify.each do |entity_id|
-      if world.has_component?(entity_id, Health)
-        world.remove_component(entity_id, Health)
-      else
-        world.add_component(entity_id, Health.new(100, 100))
-      end
+    to_add = []
+    world.each_entity(Position, without: Health) do |entity_id, _pos|
+      to_add << entity_id if rand < 0.01
     end
+
+    to_remove.each { |entity_id| world.remove_component(entity_id, Health) }
+    to_add.each { |entity_id| world.add_component(entity_id, Health.new(100, 100)) }
   elsif scenario[:destroy]
     if args.state.benchmark_frames == 0
       entities_to_destroy = []

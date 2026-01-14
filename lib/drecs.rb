@@ -70,10 +70,16 @@ module Drecs
   class Query
     attr_reader :world, :component_classes, :signature, :matching_archetypes
 
-    def initialize(world, component_classes)
+    def initialize(world, component_classes, with: nil, without: nil, any: nil, changed: nil)
       @world = world
       @component_classes = component_classes
-      @signature = world.normalize_signature(component_classes)
+      with_components = Array(with)
+      changed_components = Array(changed)
+      required_components = (component_classes + with_components + changed_components).uniq
+      @signature = world.normalize_signature(required_components)
+      @without_signature = (tmp = Array(without)).empty? ? nil : world.normalize_signature(tmp)
+      @any_signature = (tmp = Array(any)).empty? ? nil : world.normalize_signature(tmp)
+      @changed_signature = (tmp = changed_components).empty? ? nil : world.normalize_signature(tmp)
       refresh!
     end
 
@@ -95,6 +101,32 @@ module Drecs
             break
           end
           j += 1
+        end
+
+        if matches && (without_sig = @without_signature)
+          k = 0
+          k_len = without_sig.length
+          while k < k_len
+            if stores_hash.key?(without_sig[k])
+              matches = false
+              break
+            end
+            k += 1
+          end
+        end
+
+        if matches && (any_sig = @any_signature)
+          k = 0
+          k_len = any_sig.length
+          any_match = false
+          while k < k_len
+            if stores_hash.key?(any_sig[k])
+              any_match = true
+              break
+            end
+            k += 1
+          end
+          matches = false unless any_match
         end
 
         if matches
@@ -124,19 +156,76 @@ module Drecs
         # Skip empty archetypes
         unless ids.empty?
           stores = @cached_stores[i]
-          case stores.length
-          when 0
-            yield(ids)
-          when 1
-            yield(ids, stores[0])
-          when 2
-            yield(ids, stores[0], stores[1])
-          when 3
-            yield(ids, stores[0], stores[1], stores[2])
-          when 4
-            yield(ids, stores[0], stores[1], stores[2], stores[3])
+
+          if (changed_sig = @changed_signature)
+            changed_tick = @world.change_tick
+            changed_arrays = Array.new(changed_sig.length)
+            j = 0
+            j_len = changed_sig.length
+            while j < j_len
+              changed_arrays[j] = archetype.component_changed_at[changed_sig[j]]
+              j += 1
+            end
+
+            filtered_ids = []
+            filtered_stores = Array.new(stores.length) { [] }
+            row = 0
+            row_len = ids.length
+            while row < row_len
+              ok = true
+              j = 0
+              while j < j_len
+                if changed_arrays[j][row] != changed_tick
+                  ok = false
+                  break
+                end
+                j += 1
+              end
+
+              if ok
+                filtered_ids << ids[row]
+                k = 0
+                k_len = stores.length
+                while k < k_len
+                  filtered_stores[k] << stores[k][row]
+                  k += 1
+                end
+              end
+
+              row += 1
+            end
+
+            unless filtered_ids.empty?
+              case filtered_stores.length
+              when 0
+                yield(filtered_ids)
+              when 1
+                yield(filtered_ids, filtered_stores[0])
+              when 2
+                yield(filtered_ids, filtered_stores[0], filtered_stores[1])
+              when 3
+                yield(filtered_ids, filtered_stores[0], filtered_stores[1], filtered_stores[2])
+              when 4
+                yield(filtered_ids, filtered_stores[0], filtered_stores[1], filtered_stores[2], filtered_stores[3])
+              else
+                yield(filtered_ids, *filtered_stores)
+              end
+            end
           else
-            yield(ids, *stores)
+            case stores.length
+            when 0
+              yield(ids)
+            when 1
+              yield(ids, stores[0])
+            when 2
+              yield(ids, stores[0], stores[1])
+            when 3
+              yield(ids, stores[0], stores[1], stores[2])
+            when 4
+              yield(ids, stores[0], stores[1], stores[2], stores[3])
+            else
+              yield(ids, *stores)
+            end
           end
         end
         
@@ -148,25 +237,36 @@ module Drecs
   class Archetype
     include SignatureHelper 
 
-    attr_reader :component_classes, :component_stores, :stores_list, :entity_ids
+    attr_reader :component_classes, :component_stores, :stores_list, :entity_ids, :component_changed_at, :changed_stores_list
 
     def initialize(component_classes)
       # The signature of the archetype, always sorted for consistent lookup.
       @component_classes = component_classes.frozen? ? component_classes : normalize_signature(component_classes)
       @component_stores = @component_classes.to_h { |klass| [klass, []] }
       @stores_list = @component_classes.map { |k| @component_stores[k] } # Fast array access
+      @component_changed_at = @component_classes.to_h { |klass| [klass, []] }
+      @changed_stores_list = @component_classes.map { |k| @component_changed_at[k] }
       @entity_ids = [] # Maps row index to the entity ID at that row
     end
 
     # Adds an entity's data to this archetype.
-    def add(entity_id, components_hash)
+    def add(entity_id, components_hash, changed_hash = nil, touched_hash = nil, change_tick = nil)
+      change_tick ||= 0
       classes = @component_classes
       stores = @stores_list
+      changed_stores = @changed_stores_list
       i = 0
       len = stores.length
       while i < len
         klass = classes[i]
         stores[i] << components_hash[klass]
+        if touched_hash && touched_hash[klass]
+          changed_stores[i] << change_tick
+        elsif changed_hash
+          changed_stores[i] << (changed_hash[klass] || change_tick)
+        else
+          changed_stores[i] << change_tick
+        end
         i += 1
       end
       @entity_ids << entity_id
@@ -174,14 +274,17 @@ module Drecs
     end
 
     # Optimized add when components are already an array matching signature classes
-    def add_ordered(entity_id, components_array)
+    def add_ordered(entity_id, components_array, change_tick = nil)
+      change_tick ||= 0
       # WARNING: This assumes components_array is in the correct order as @component_classes
       # and matches the length exactly.
       stores = @stores_list
+      changed_stores = @changed_stores_list
       i = 0
       len = stores.length
       while i < len
         stores[i] << components_array[i]
+        changed_stores[i] << change_tick
         i += 1
       end
       @entity_ids << entity_id
@@ -196,6 +299,7 @@ module Drecs
       last_entity_id = ids[last_idx]
 
       stores = @stores_list
+      changed_stores = @changed_stores_list
 
       # To avoid leaving a hole, we move the *last* element into the deleted slot.
       if last_idx > 0 && row_index != last_idx
@@ -204,6 +308,8 @@ module Drecs
         while i < len
           store = stores[i]
           store[row_index] = store[last_idx]
+          changed_store = changed_stores[i]
+          changed_store[row_index] = changed_store[last_idx]
           i += 1
         end
         ids[row_index] = last_entity_id
@@ -213,6 +319,7 @@ module Drecs
       len = stores.length
       while i < len
         stores[i].pop
+        changed_stores[i].pop
         i += 1
       end
       ids.pop
@@ -228,6 +335,8 @@ module Drecs
     def initialize(reuse_entity_ids: true, validate_components: false)
       @entity_manager = EntityManager.new(reuse_entity_ids: reuse_entity_ids)
       @systems = []
+
+      @change_tick = 0
 
       @validate_components = validate_components
 
@@ -269,7 +378,16 @@ module Drecs
       system
     end
 
+    def change_tick
+      @change_tick
+    end
+
+    def advance_change_tick!
+      @change_tick += 1
+    end
+
     def tick(args)
+      advance_change_tick!
       Array.each(@systems) { _1.call(self, args) }
       nil
     end
@@ -283,7 +401,7 @@ module Drecs
         components_hash = components[0]
         signature = normalize_signature(components_hash.keys)
         archetype = find_or_create_archetype(signature)
-        row = archetype.add(entity_id, components_hash)
+        row = archetype.add(entity_id, components_hash, nil, nil, @change_tick)
       else
         if @validate_components
           classes = components.map(&:class)
@@ -300,13 +418,13 @@ module Drecs
         # If the components are already in the correct signature order, we can use add_ordered.
         # Otherwise, we use the robust hash-based add.
         if classes == archetype.component_classes
-          row = archetype.add_ordered(entity_id, components)
+          row = archetype.add_ordered(entity_id, components, @change_tick)
         else
           # Fallback to hash-based add for correct mapping. 
           # We manually build the hash to avoid the overhead of components.to_h
           comp_hash = {}
           Array.each(components) { |c| comp_hash[c.class] = c }
-          row = archetype.add(entity_id, comp_hash)
+          row = archetype.add(entity_id, comp_hash, nil, nil, @change_tick)
         end
       end
 
@@ -336,17 +454,21 @@ module Drecs
       ids = @entity_manager.batch_create_entities(count)
 
       stores_list = archetype.stores_list
+      changed_list = archetype.changed_stores_list
       store_i = 0
       store_len = stores_list.length
       while store_i < store_len
         store = stores_list[store_i]
+        changed_store = changed_list[store_i]
         proto = ordered_components[store_i]
 
         base = store.length
         store[base + count - 1] = nil
+        changed_store[base + count - 1] = nil
         j = 0
         while j < count
           store[base + j] = proto.dup
+          changed_store[base + j] = @change_tick
           j += 1
         end
 
@@ -424,15 +546,24 @@ module Drecs
         [klass, old_archetype.component_stores[klass][row]]
       end
 
+      all_changed = old_archetype.component_classes.to_h do |klass|
+        [klass, old_archetype.component_changed_at[klass][row]]
+      end
+
+      touched = {}
+
       # Handle both hash-style and struct-style components
       if component_value.nil?
         if component_key_or_component.is_a?(Hash)
           all_components.merge!(component_key_or_component)
+          Array.each(component_key_or_component) { |k, _v| touched[k] = true }
         else
           all_components[component_key_or_component.class] = component_key_or_component
+          touched[component_key_or_component.class] = true
         end
       else
         all_components[component_key_or_component] = component_value
+        touched[component_key_or_component] = true
       end
 
       # 2. Find the new archetype based on the new signature
@@ -445,19 +576,22 @@ module Drecs
           if component_key_or_component.is_a?(Hash)
             Array.each(component_key_or_component) do |k, v|
               new_archetype.component_stores[k][row] = v
+              new_archetype.component_changed_at[k][row] = @change_tick
             end
           else
             new_archetype.component_stores[component_key_or_component.class][row] = component_key_or_component
+            new_archetype.component_changed_at[component_key_or_component.class][row] = @change_tick
           end
         else
           new_archetype.component_stores[component_key_or_component][row] = component_value
+          new_archetype.component_changed_at[component_key_or_component][row] = @change_tick
         end
 
         return true
       end
 
       # 3. Add entity data to the new archetype
-      new_row = new_archetype.add(entity_id, all_components)
+      new_row = new_archetype.add(entity_id, all_components, all_changed, touched, @change_tick)
       @entity_archetypes[entity_id] = new_archetype
       @entity_rows[entity_id] = new_row
 
@@ -488,16 +622,21 @@ module Drecs
         [klass, old_archetype.component_stores[klass][row]]
       end
 
+      all_changed = old_archetype.component_classes.to_h do |klass|
+        [klass, old_archetype.component_changed_at[klass][row]]
+      end
+
       # If the entity doesn't have the component, nothing to do
       return false unless all_components.key?(component_class)
 
       # 2. Remove the specified component and find/create the new archetype
       all_components.delete(component_class)
+      all_changed.delete(component_class)
       new_signature = normalize_signature(all_components.keys)
       new_archetype = find_or_create_archetype(new_signature)
 
       # 3. Add entity data to the new archetype
-      new_row = new_archetype.add(entity_id, all_components)
+      new_row = new_archetype.add(entity_id, all_components, all_changed, nil, @change_tick)
       @entity_archetypes[entity_id] = new_archetype
       @entity_rows[entity_id] = new_row
 
@@ -563,12 +702,20 @@ module Drecs
         [klass, old_archetype.component_stores[klass][row]]
       end
 
+      all_changed = old_archetype.component_classes.to_h do |klass|
+        [klass, old_archetype.component_changed_at[klass][row]]
+      end
+
+      touched = {}
+
       # 2. Merge in the new components (overwriting any existing ones)
       Array.each(components) do |c|
         if c.is_a?(Hash)
           all_components.merge!(c)
+          Array.each(c) { |k, _v| touched[k] = true }
         else
           all_components[c.class] = c
+          touched[c.class] = true
         end
       end
 
@@ -580,16 +727,20 @@ module Drecs
       if old_archetype == new_archetype
         Array.each(components) do |c|
           if c.is_a?(Hash)
-            Array.each(c) { |k, v| new_archetype.component_stores[k][row] = v }
+            Array.each(c) do |k, v|
+              new_archetype.component_stores[k][row] = v
+              new_archetype.component_changed_at[k][row] = @change_tick
+            end
           else
             new_archetype.component_stores[c.class][row] = c
+            new_archetype.component_changed_at[c.class][row] = @change_tick
           end
         end
         return true
       end
 
       # 5. Add entity data to the new archetype
-      new_row = new_archetype.add(entity_id, all_components)
+      new_row = new_archetype.add(entity_id, all_components, all_changed, touched, @change_tick)
       @entity_archetypes[entity_id] = new_archetype
       @entity_rows[entity_id] = new_row
 
@@ -624,22 +775,31 @@ module Drecs
 
     # The query interface for systems.
     # Yields entity_ids array first, followed by component arrays.
-    def query(*component_classes, with: nil, &block)
+    def query(*component_classes, with: nil, without: nil, any: nil, changed: nil, &block)
       # If no block is given, return an enumerator that will yield single entities.
       # This provides an ergonomic "AoS" view (e.g. query(A).first -> [id, a])
       # while keeping the optimized "SoA" view for the block form.
       unless block_given?
-        return each_entity(*component_classes, with: with)
+        return each_entity(*component_classes, with: with, without: without, any: any, changed: changed)
       end
 
       with_components = Array(with)
-      required_components = (component_classes + with_components).uniq
+      changed_components = Array(changed)
+      required_components = (component_classes + with_components + changed_components).uniq
+
+      without_components = Array(without)
+      any_components = Array(any)
 
       # Normalize query signature and cache it
       query_sig = normalize_signature(required_components)
 
+      without_sig = without_components.empty? ? nil : normalize_signature(without_components)
+      any_sig = any_components.empty? ? nil : normalize_signature(any_components)
+      changed_sig = changed_components.empty? ? nil : normalize_signature(changed_components)
+      cache_key = [query_sig, without_sig, any_sig, changed_sig].freeze
+
       # Use cached matching archetypes if available
-      matching_archetypes = @query_cache[query_sig] ||= @archetypes.values.select do |archetype|
+      matching_archetypes = @query_cache[cache_key] ||= @archetypes.values.select do |archetype|
         stores_hash = archetype.component_stores
         j = 0
         lenj = query_sig.length
@@ -650,6 +810,32 @@ module Drecs
             break
           end
           j += 1
+        end
+
+        if ok && without_sig
+          k = 0
+          lenk = without_sig.length
+          while k < lenk
+            if stores_hash.key?(without_sig[k])
+              ok = false
+              break
+            end
+            k += 1
+          end
+        end
+
+        if ok && any_sig
+          k = 0
+          lenk = any_sig.length
+          any_match = false
+          while k < lenk
+            if stores_hash.key?(any_sig[k])
+              any_match = true
+              break
+            end
+            k += 1
+          end
+          ok = false unless any_match
         end
         ok
       end
@@ -667,17 +853,52 @@ module Drecs
         # Pre-compute component stores to avoid repeated hash lookups
         stores = component_classes.map { |klass| archetype.component_stores[klass] }
 
-        # Yield entity_ids first, then component arrays for high-speed iteration
-        yield(archetype.entity_ids, *stores)
+        if changed_sig
+          changed_tick = @change_tick
+          changed_arrays = changed_sig.map { |klass| archetype.component_changed_at[klass] }
+
+          ids = archetype.entity_ids
+          filtered_ids = []
+          filtered_stores = Array.new(stores.length) { [] }
+          row = 0
+          row_len = ids.length
+
+          while row < row_len
+            ok = true
+            j = 0
+            j_len = changed_arrays.length
+            while j < j_len
+              if changed_arrays[j][row] != changed_tick
+                ok = false
+                break
+              end
+              j += 1
+            end
+
+            if ok
+              filtered_ids << ids[row]
+              k = 0
+              k_len = stores.length
+              while k < k_len
+                filtered_stores[k] << stores[k][row]
+                k += 1
+              end
+            end
+
+            row += 1
+          end
+
+          yield(filtered_ids, *filtered_stores) unless filtered_ids.empty?
+        else
+          # Yield entity_ids first, then component arrays for high-speed iteration
+          yield(archetype.entity_ids, *stores)
+        end
       end
     end
 
     # Creates a persistent Query object that avoids signature setup on every call.
-    def query_for(*component_classes, with: nil)
-      with_components = Array(with)
-      required_components = (component_classes + with_components).uniq
-      
-      q = Query.new(self, required_components)
+    def query_for(*component_classes, with: nil, without: nil, any: nil, changed: nil)
+      q = Query.new(self, component_classes, with: with, without: without, any: any, changed: changed)
       @active_queries << q
       q
     end
@@ -686,29 +907,29 @@ module Drecs
       @archetypes
     end
 
-    def each_chunk(*component_classes, with: nil, &block)
+    def each_chunk(*component_classes, with: nil, without: nil, any: nil, changed: nil, &block)
       unless block_given?
         return Enumerator.new do |yielder|
-          each_chunk(*component_classes, with: with) do |*args|
+          each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |*args|
             yielder.yield(*args)
           end
         end
       end
 
-      query(*component_classes, with: with, &block)
+      query(*component_classes, with: with, without: without, any: any, changed: changed, &block)
     end
 
-    def count(*component_classes, with: nil)
+    def count(*component_classes, with: nil, without: nil, any: nil, changed: nil)
       total = 0
-      query(*component_classes, with: with) do |entity_ids, *stores|
+      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
         total += entity_ids.length
       end
       total
     end
 
-    def ids(*component_classes, with: nil)
+    def ids(*component_classes, with: nil, without: nil, any: nil, changed: nil)
       all_ids = []
-      query(*component_classes, with: with) do |entity_ids, *stores|
+      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
         all_ids.concat(entity_ids)
       end
       all_ids
@@ -717,16 +938,16 @@ module Drecs
     # Iterates over each entity that has the specified components, yielding the entity_id
     # and the requested components as individual values (not arrays).
     # More ergonomic than query() for per-entity iteration.
-    def each_entity(*component_classes, with: nil, &block)
+    def each_entity(*component_classes, with: nil, without: nil, any: nil, changed: nil, &block)
       unless block_given?
         return Enumerator.new do |yielder|
-          each_entity(*component_classes, with: with) do |*args|
+          each_entity(*component_classes, with: with, without: without, any: any, changed: changed) do |*args|
             yielder.yield(*args)
           end
         end
       end
 
-      query(*component_classes, with: with) do |entity_ids, *stores|
+      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
         i = 0
         len = entity_ids.length
         num_stores = stores.length
@@ -752,8 +973,8 @@ module Drecs
     # Finds the first entity that has the specified components.
     # Returns [entity_id, component1, component2, ...] or nil if no match found.
     # If a block is given, yields the entity_id and components, returning the entity_id.
-    def first_entity(*component_classes, with: nil, &block)
-      query(*component_classes, with: with) do |entity_ids, *stores|
+    def first_entity(*component_classes, with: nil, without: nil, any: nil, changed: nil, &block)
+      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
         next if entity_ids.empty?
 
         entity_id = entity_ids[0]
@@ -792,8 +1013,8 @@ module Drecs
     end
 
     # Convenience wrapper for destroying all entities matching a query signature.
-    def destroy_query(*component_classes, with: nil)
-      destroy_from_query(query(*component_classes, with: with))
+    def destroy_query(*component_classes, with: nil, without: nil, any: nil, changed: nil)
+      destroy_from_query(query(*component_classes, with: with, without: without, any: any, changed: changed))
     end
 
     alias_method :destroy_all, :destroy_query
