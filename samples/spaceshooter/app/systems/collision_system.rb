@@ -1,7 +1,5 @@
 class CollisionSystem
   def call(world, args)
-    to_destroy = []
-
     world.query(Position, Bullet) do |bullet_ids, bullet_positions, bullets|
       world.query(Position, Enemy, Sprite) do |enemy_ids, enemy_positions, enemies, enemy_sprites|
         Array.each_with_index(bullet_positions) do |bullet_pos, i|
@@ -12,15 +10,12 @@ class CollisionSystem
             enemy_sprite = enemy_sprites[j]
 
             if overlaps?(bullet_pos, 4, 12, enemy_pos, enemy_sprite.w, enemy_sprite.h)
-              to_destroy << bullet_id unless to_destroy.include?(bullet_id)
-              to_destroy << enemy_id unless to_destroy.include?(enemy_id)
+              world.send_event(HitEvent.new(bullet_id, enemy_id))
             end
           end
         end
       end
     end
-
-    world.destroy(*to_destroy)
   end
 
   private

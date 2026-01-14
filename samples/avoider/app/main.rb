@@ -7,6 +7,7 @@ Player = Struct.new(:speed)
 Enemy = Struct.new(:speed)
 Bullet = Struct.new(:ttl)
 Frozen = Class.new
+HitEvent = Struct.new(:bullet_id, :enemy_id)
 
 WORLD_W = 1280
 WORLD_H = 720
@@ -60,6 +61,7 @@ def tick(args)
   update_bullets(args, world)
   move_entities(args, world)
   handle_collisions(args, world)
+  apply_events(args, world)
   update_render_cache(args, world)
   render(args, world)
 end
@@ -209,9 +211,6 @@ def handle_collisions(args, world)
 
   return if enemies.empty?
 
-  bullets_to_destroy = []
-  enemies_to_destroy = []
-
   bi = 0
   while bi < bullets.length
     b_id, b_pos, b_size = bullets[bi]
@@ -221,8 +220,7 @@ def handle_collisions(args, world)
       e_id, e_pos, e_size = enemies[ei]
 
       if aabb_overlap?(b_pos, b_size, e_pos, e_size)
-        bullets_to_destroy << b_id
-        enemies_to_destroy << e_id
+        world.send_event(HitEvent.new(b_id, e_id))
         break
       end
 
@@ -231,20 +229,37 @@ def handle_collisions(args, world)
 
     bi += 1
   end
+end
 
-  unless bullets_to_destroy.empty?
-    world.destroy(*bullets_to_destroy)
-    args.state.to_remove_from_cache.concat(bullets_to_destroy)
+def apply_events(args, world)
+  hit_events = world.each_event(HitEvent)
+  return nil if hit_events.nil?
+
+  bullets_to_destroy = {}
+  enemies_to_destroy = {}
+
+  hit_events.each do |evt|
+    bullets_to_destroy[evt.bullet_id] = true
+    enemies_to_destroy[evt.enemy_id] = true
   end
 
-  unless enemies_to_destroy.empty?
-    world.destroy(*enemies_to_destroy)
-    args.state.to_remove_from_cache.concat(enemies_to_destroy)
-    args.state.score += enemies_to_destroy.length
+  if !bullets_to_destroy.empty?
+    ids = bullets_to_destroy.keys
+    world.destroy(*ids)
+    args.state.to_remove_from_cache.concat(ids)
+  end
 
-    spawn_enemies(world, enemies_to_destroy.length)
+  if !enemies_to_destroy.empty?
+    ids = enemies_to_destroy.keys
+    world.destroy(*ids)
+    args.state.to_remove_from_cache.concat(ids)
+    args.state.score += ids.length
+    spawn_enemies(world, ids.length)
     args.state.full_render = true
   end
+
+  world.clear_events!(HitEvent)
+  nil
 end
 
 def aabb_overlap?(a_pos, a_size, b_pos, b_size)

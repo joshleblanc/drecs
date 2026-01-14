@@ -5,12 +5,14 @@ require_relative 'components/player.rb'
 require_relative 'components/enemy.rb'
 require_relative 'components/bullet.rb'
 require_relative 'components/lifetime.rb'
+require_relative 'components/hit_event.rb'
 
 require_relative 'systems/player_input_system.rb'
 require_relative 'systems/movement_system.rb'
 require_relative 'systems/enemy_ai_system.rb'
 require_relative 'systems/lifetime_system.rb'
 require_relative 'systems/collision_system.rb'
+require_relative 'systems/hit_event_system.rb'
 require_relative 'systems/render_system.rb'
 
 def boot(args)
@@ -37,12 +39,15 @@ def boot(args)
     EnemyAISystem.new,
     MovementSystem.new,
     CollisionSystem.new,
+    HitEventSystem.new,
     LifetimeSystem.new,
     RenderSystem.new
   ]
 end
 
 def tick(args)
+  args.state.world.advance_change_tick!
+
   Array.each(args.state.systems) do |system|
     system.call(args.state.world, args)
   end

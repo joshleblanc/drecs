@@ -354,6 +354,7 @@ module Drecs
 
       @deferred = []
       @resources = {}
+      @events = {}
     end
 
     def defer(&blk)
@@ -384,6 +385,7 @@ module Drecs
 
     def advance_change_tick!
       @change_tick += 1
+      clear_events!
     end
 
     def tick(args)
@@ -1075,6 +1077,53 @@ module Drecs
     # Remove a resource by class or symbol key
     def remove_resource(resource_or_key)
       @resources&.delete(resource_or_key)
+    end
+
+    def send_event(event_or_key, value = nil)
+      @events ||= {}
+      if value.nil?
+        evt = event_or_key
+        key = evt.is_a?(Hash) ? evt.keys.first : evt.class
+        (@events[key] ||= []) << evt
+        evt
+      else
+        key = event_or_key
+        evt = value
+        (@events[key] ||= []) << evt
+        evt
+      end
+    end
+
+    def each_event(event_class_or_key, &block)
+      unless block_given?
+        return Enumerator.new do |yielder|
+          each_event(event_class_or_key) { |evt| yielder << evt }
+        end
+      end
+
+      events = @events&.[](event_class_or_key)
+      return nil unless events && !events.empty?
+
+      i = 0
+      len = events.length
+      while i < len
+        yield(events[i])
+        i += 1
+      end
+      nil
+    end
+
+    def clear_events!(event_class_or_key = nil)
+      events = @events
+      return nil unless events && !events.empty?
+
+      if event_class_or_key.nil?
+        events.each_value { |arr| arr.clear }
+      else
+        arr = events[event_class_or_key]
+        arr.clear if arr
+      end
+      nil
     end
 
     private
