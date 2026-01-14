@@ -1,3 +1,7 @@
+# Resources for global game state
+GameTime = Struct.new(:elapsed, :delta)
+GameConfig = Struct.new(:boids_count, :show_debug, :mouse_enabled)
+
 RESOLUTION = {
   w: 1280,
   h: 720
@@ -125,6 +129,10 @@ end
 def boot(args)
   args.state.entities = Drecs::World.new
 
+  # Insert resources
+  args.state.entities.insert_resource(GameTime.new(0.0, 0.016))
+  args.state.entities.insert_resource(GameConfig.new(BOIDS_COUNT, true, true))
+
   # Create a single grid component entity to hold spatial buckets
   args.state.grid = Grid.new(Array.new(GRID_COLS) { Array.new(GRID_ROWS) { [] } })
   args.state.entities.spawn(args.state.grid)
@@ -146,9 +154,12 @@ def boot(args)
 end
 
 def tick(args)
-  now = Time.now 
-  args.state.delta_time = now - (args.state.last_time || now - 0.016)
-  args.state.last_time = now
+  # Get resources
+  time = args.state.entities.resource(GameTime)
+  config = args.state.entities.resource(GameConfig)
+
+  # Update time resource
+  time.elapsed += time.delta
 
   grid = args.state.grid.cells
   grid.replace(Array.new(GRID_COLS) { Array.new(GRID_ROWS) { [] } })
@@ -195,7 +206,7 @@ def tick(args)
       end
 
       if neighbour_count > 0
-        if args.inputs.mouse.left
+        if args.inputs.mouse.left && config.mouse_enabled
           MOUSE.x = args.inputs.mouse.x
           MOUSE.y = args.inputs.mouse.y
           COHESION.x = MOUSE.x
@@ -232,7 +243,7 @@ def tick(args)
 
       # Integrate position and apply bounds/wrap
       pos.add!(vel)
-      vel.mul!(args.state.delta_time * 100)
+      vel.mul!(time.delta * 100)
 
       if BOUNCE
         vel.x = -vel.x if pos.x < 0 || pos.x > RESOLUTION[:w]
@@ -272,8 +283,11 @@ def tick(args)
 
   args.outputs.solids << solids
 
-  args.outputs.debug << "#{args.gtk.current_framerate} fps"
-  args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
-  args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
-  args.outputs.debug << "boids: #{BOIDS_COUNT}"
+  if config.show_debug
+    args.outputs.debug << "#{args.gtk.current_framerate} fps"
+    args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
+    args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
+    args.outputs.debug << "boids: #{config.boids_count}"
+    args.outputs.debug << "time: #{time.elapsed.round(2)}s"
+  end
 end

@@ -246,6 +246,71 @@ world.archetype_stats.each do |stat|
 end
 ```
 
+### Resources
+
+Resources provide global singleton state that doesn't belong to any entity, such as game time, configuration, input state, etc. They're useful for data that needs to be accessed by many systems without entity relationships.
+
+#### Defining Resources
+
+Resources can be plain Ruby structs or any object:
+
+```ruby
+GameTime = Struct.new(:elapsed, :delta)
+GameConfig = Struct.new(:difficulty, :max_players)
+Score = Struct.new(:current, :high_score)
+```
+
+#### Inserting Resources
+
+```ruby
+# Insert struct-style resource (keyed by class)
+world.insert_resource(GameTime.new(0.0, 0.016))
+
+# Insert hash-style resource (keyed by symbol)
+world.insert_resource({ score: Score.new(0, 100) })
+
+# Insert with explicit key-value
+world.insert_resource(:player_name, "Player1")
+```
+
+#### Retrieving Resources
+
+```ruby
+# Retrieve by class
+time = world.resource(GameTime)
+
+# Retrieve by symbol
+score = world.resource(:score)
+
+# Retrieve by key passed during insertion
+player_name = world.resource(:player_name)
+```
+
+#### Using Resources in Systems
+
+```ruby
+class TimeSystem
+  def call(world, args)
+    time = world.resource(GameTime)
+    time.elapsed += time.delta
+  end
+end
+
+class ScoreDisplaySystem
+  def call(world, args)
+    score = world.resource(Score)
+    # Display score...
+  end
+end
+```
+
+#### Removing Resources
+
+```ruby
+world.remove_resource(GameTime)
+world.remove_resource(:score)
+```
+
 ## Performance Tips
 
 1. **Use `query` for batch operations** - When processing many entities, `query` is faster than `each_entity` because it works with raw arrays

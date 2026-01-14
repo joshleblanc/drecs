@@ -244,6 +244,7 @@ module Drecs
       @active_queries = [] # List of Query objects to refresh when archetypes change
 
       @deferred = []
+      @resources = {}
     end
 
     def defer(&blk)
@@ -827,6 +828,32 @@ module Drecs
           entity_count: archetype.entity_ids.length
         }
       end
+    end
+
+    # Resources provide global singleton state management
+    def insert_resource(resource_or_key, value = nil)
+      @resources ||= {}
+      if value.nil?
+        if resource_or_key.is_a?(Hash)
+          key = resource_or_key.keys.first
+          val = resource_or_key.values.first
+          @resources[key] = val
+        else
+          @resources[resource_or_key.class] = resource_or_key
+        end
+      else
+        @resources[resource_or_key] = value
+      end
+    end
+
+    # Retrieve a resource by class or symbol key
+    def resource(resource_or_key)
+      @resources&.[](resource_or_key)
+    end
+
+    # Remove a resource by class or symbol key
+    def remove_resource(resource_or_key)
+      @resources&.delete(resource_or_key)
     end
 
     private

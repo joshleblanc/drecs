@@ -17,6 +17,10 @@ SCENARIOS = [
   { name: "100K Entities - System (3 Components)", count: 100000, system_3comp: true }
 ]
 
+# Resources for benchmark state management
+GameTime = Struct.new(:elapsed, :delta)
+BenchmarkConfig = Struct.new(:warmup_frames, :benchmark_frames, :show_debug)
+
 def monotonic_time
   Process.clock_gettime(Process::CLOCK_MONOTONIC)
 rescue StandardError
@@ -25,8 +29,6 @@ end
 
 def tick(args)
   args.state.scenario_index ||= 0
-  args.state.warmup_frames ||= 0
-  args.state.benchmark_frames ||= 0
   args.state.frame_times ||= []
   args.state.running ||= false
   args.state.results ||= []
@@ -61,6 +63,10 @@ end
 def setup_scenario(args, scenario)
   args.state.world = Drecs::World.new
   world = args.state.world
+
+  # Initialize resources
+  world.insert_resource(GameTime.new(0.0, 0.016))
+  world.insert_resource(BenchmarkConfig.new(60, 300, true))
 
   if scenario[:creation_only] || scenario[:system_3comp]
     world.spawn_many(scenario[:count], 
@@ -99,8 +105,12 @@ def run_benchmark(args)
   scenario = args.state.scenario
   world = args.state.world
 
-  if args.state.warmup_frames < 60
-    args.state.warmup_frames += 1
+  config = world.resource(BenchmarkConfig)
+  time = world.resource(GameTime)
+  time.elapsed += time.delta
+
+  if config.warmup_frames < 60
+    config.warmup_frames += 1
     if scenario[:creation_only]
       setup_scenario(args, scenario)
     else
@@ -110,7 +120,7 @@ def run_benchmark(args)
     return
   end
 
-  if args.state.benchmark_frames < 300
+  if config.benchmark_frames < 300
     start_time = monotonic_time
 
     if scenario[:creation_only]
@@ -122,11 +132,11 @@ def run_benchmark(args)
     end_time = monotonic_time
     frame_time = (end_time - start_time) * 1000.0
     args.state.frame_times << frame_time
-    args.state.benchmark_frames += 1
+    config.benchmark_frames += 1
 
     render_benchmark_progress(args, "Benchmarking...", args.state.benchmark_frames / 300.0)
   else
-    finish_benchmark(args)
+    finish_benchmark(args, config)
   end
 end
 
@@ -189,7 +199,7 @@ def perform_scenario_work(args, scenario, world)
   end
 end
 
-def finish_benchmark(args)
+def finish_benchmark(args, config)
   frame_times = args.state.frame_times
   avg_time = frame_times.sum / frame_times.length
   min_time = frame_times.min
@@ -215,6 +225,8 @@ def finish_benchmark(args)
     avg_fps: 1000.0 / avg_time
   }
 
+  config.warmup_frames = 0
+  config.benchmark_frames = 0
   args.state.scenario_index = (args.state.scenario_index + 1) % SCENARIOS.length
   args.state.running = false
 end
@@ -323,6 +335,8 @@ def render_benchmark_progress(args, status, progress)
   }
 
   world = args.state.world
+  time = world.resource(GameTime)
+  config = world.resource(BenchmarkConfig)
   args.outputs.labels << {
     x: 640, y: 220,
     text: "Entities: #{world.entity_count} | Archetypes: #{world.archetype_count}",
@@ -330,6 +344,16 @@ def render_benchmark_progress(args, status, progress)
     alignment_enum: 1,
     r: 180, g: 180, b: 180
   }
+
+  if config.show_debug
+    args.outputs.labels << {
+      x: 640, y: 180,
+      text: "Elapsed: #{time.elapsed.round(2)}s",
+      size_enum: 2,
+      alignment_enum: 1,
+      r: 150, g: 255, b: 150
+    }
+  end
 
   if args.state.frame_times.length > 0
     recent_times = args.state.frame_times.last(60)

@@ -2,6 +2,10 @@ GRID_SIZE = 20
 CELL_SIZE = 32
 MOVE_INTERVAL = 0.15
 
+# Resources for game state management
+GameTime = Struct.new(:elapsed, :delta)
+GameState = Struct.new(:score, :game_over, :move_timer)
+
 def tick(args)
   args.state.world ||= setup(args)
 
@@ -13,6 +17,10 @@ end
 
 def setup(args)
   world = Drecs::World.new
+
+  # Insert resources
+  world.insert_resource(GameTime.new(0.0, 0.016))
+  world.insert_resource(GameState.new(0, false, 0))
 
   head = world.spawn({
     position: { x: 10, y: 10 },
@@ -35,10 +43,6 @@ def setup(args)
 
   spawn_food(world)
 
-  args.state.move_timer = 0
-  args.state.game_over = false
-  args.state.score = 0
-
   world
 end
 
@@ -51,9 +55,10 @@ def spawn_food(world)
 end
 
 def handle_input(args)
-  return if args.state.game_over
-
   world = args.state.world
+  state = world.resource(GameState)
+
+  return if state.game_over
 
   world.each_entity(:snake_head, :velocity) do |entity_id, head, velocity|
     if args.inputs.keyboard.key_down.up && velocity[:dy] == 0
@@ -77,14 +82,17 @@ def handle_input(args)
 end
 
 def update_movement(args)
-  return if args.state.game_over
-
-  args.state.move_timer += args.state.tick_count > 0 ? 1.0 / 60 : 0
-
-  return if args.state.move_timer < MOVE_INTERVAL
-
-  args.state.move_timer = 0
   world = args.state.world
+  state = world.resource(GameState)
+  time = world.resource(GameTime)
+
+  return if state.game_over
+
+  time.elapsed += time.delta
+
+  return if state.move_timer < MOVE_INTERVAL
+
+  state.move_timer = 0
 
   head_pos = nil
   new_head_pos = nil
@@ -116,16 +124,17 @@ def update_movement(args)
 end
 
 def check_collisions(args)
-  return if args.state.game_over
-
   world = args.state.world
+  state = world.resource(GameState)
+
+  return if state.game_over
 
   head_pos = nil
   world.each_entity(:snake_head, :position) do |entity_id, head, pos|
     head_pos = pos
 
     if pos[:x] < 0 || pos[:x] >= GRID_SIZE || pos[:y] < 0 || pos[:y] >= GRID_SIZE
-      args.state.game_over = true
+      state.game_over = true
       return
     end
   end
@@ -134,7 +143,7 @@ def check_collisions(args)
 
   world.each_entity(:snake_body, :position) do |entity_id, body, pos|
     if pos[:x] == head_pos[:x] && pos[:y] == head_pos[:y]
-      args.state.game_over = true
+      state.game_over = true
       return
     end
   end
@@ -143,7 +152,7 @@ def check_collisions(args)
   world.each_entity(:food, :position) do |entity_id, food, pos|
     if pos[:x] == head_pos[:x] && pos[:y] == head_pos[:y]
       food_entity = entity_id
-      args.state.score += 1
+      state.score += 1
     end
   end
 
@@ -176,6 +185,7 @@ end
 
 def render(args)
   world = args.state.world
+  state = world.resource(GameState)
 
   args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 20, g: 20, b: 20 }
 
@@ -194,7 +204,7 @@ def render(args)
   args.outputs.labels << {
     x: 640,
     y: 700,
-    text: "Score: #{args.state.score}",
+    text: "Score: #{state.score}",
     size_enum: 4,
     alignment_enum: 1,
     r: 255,
@@ -202,7 +212,7 @@ def render(args)
     b: 255
   }
 
-  if args.state.game_over
+  if state.game_over
     args.outputs.labels << {
       x: 640,
       y: 400,

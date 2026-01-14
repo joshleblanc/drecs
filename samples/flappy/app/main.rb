@@ -5,6 +5,10 @@ PIPE_GAP = 150
 PIPE_WIDTH = 60
 PIPE_SPAWN_INTERVAL = 90
 
+# Resources for game state management
+GameTime = Struct.new(:elapsed, :delta)
+GameState = Struct.new(:score, :game_over, :game_started, :pipe_timer)
+
 def tick(args)
   args.state.world ||= setup(args)
 
@@ -23,6 +27,10 @@ end
 def setup(args)
   world = Drecs::World.new
 
+  # Insert resources
+  world.insert_resource(GameTime.new(0.0, 0.016))
+  world.insert_resource(GameState.new(0, false, false, 0))
+
   world.spawn({
     position: { x: 200, y: 360 },
     velocity: { dy: 0 },
@@ -31,19 +39,15 @@ def setup(args)
     color: { r: 255, g: 255, b: 0 }
   })
 
-  args.state.pipe_timer = 0
-  args.state.score = 0
-  args.state.game_over = false
-  args.state.game_started = false
-
   world
 end
 
 def handle_input(args)
   world = args.state.world
+  state = world.resource(GameState)
 
   if args.inputs.keyboard.key_down.space || args.inputs.mouse.button_left
-    args.state.game_started = true
+    state.game_started = true
 
     world.each_entity(:bird, :velocity) do |entity_id, bird, velocity|
       velocity[:dy] = FLAP_STRENGTH
@@ -52,9 +56,13 @@ def handle_input(args)
 end
 
 def update_physics(args)
-  return unless args.state.game_started
-
   world = args.state.world
+  state = world.resource(GameState)
+
+  return unless state.game_started
+
+  time = world.resource(GameTime)
+  time.elapsed += time.delta
 
   world.each_entity(:bird, :position, :velocity) do |entity_id, bird, pos, vel|
     vel[:dy] += GRAVITY
@@ -63,7 +71,7 @@ def update_physics(args)
     if pos[:y] < 0
       pos[:y] = 0
       vel[:dy] = 0
-      args.state.game_over = true
+      state.game_over = true
     end
 
     if pos[:y] > 720
@@ -74,14 +82,15 @@ def update_physics(args)
 end
 
 def update_pipes(args)
-  return unless args.state.game_started
-
   world = args.state.world
+  state = world.resource(GameState)
 
-  args.state.pipe_timer += 1
+  return unless state.game_started
 
-  if args.state.pipe_timer >= PIPE_SPAWN_INTERVAL
-    args.state.pipe_timer = 0
+  state.pipe_timer += 1
+
+  if state.pipe_timer >= PIPE_SPAWN_INTERVAL
+    state.pipe_timer = 0
     spawn_pipe_pair(world, args)
   end
 
@@ -103,7 +112,7 @@ def update_pipes(args)
 
     if bird_pos && pos[:x] + 10 < bird_pos[:x] && !trigger[:scored]
       trigger[:scored] = true
-      args.state.score += 1
+      state.score += 1
     end
 
     if pos[:x] < -10
@@ -136,9 +145,10 @@ def spawn_pipe_pair(world, args)
 end
 
 def check_collisions(args)
-  return unless args.state.game_started
-
   world = args.state.world
+  state = world.resource(GameState)
+
+  return unless state.game_started
 
   bird_rect = nil
   world.each_entity(:bird, :position, :size) do |entity_id, bird, pos, size|
@@ -151,7 +161,7 @@ def check_collisions(args)
     pipe_rect = { x: pos[:x], y: pos[:y], w: size[:w], h: size[:h] }
 
     if rects_collide?(bird_rect, pipe_rect)
-      args.state.game_over = true
+      state.game_over = true
     end
   end
 end
@@ -171,6 +181,7 @@ end
 
 def render(args)
   world = args.state.world
+  state = world.resource(GameState)
 
   args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 135, g: 206, b: 235 }
 
@@ -208,13 +219,13 @@ def render(args)
 
   args.outputs.labels << {
     x: 640, y: 680,
-    text: "Score: #{args.state.score}",
+    text: "Score: #{state.score}",
     size_enum: 8,
     alignment_enum: 1,
     r: 255, g: 255, b: 255
   }
 
-  unless args.state.game_started
+  unless state.game_started
     args.outputs.labels << {
       x: 640, y: 400,
       text: "Press SPACE or Click to Start",
@@ -224,7 +235,7 @@ def render(args)
     }
   end
 
-  if args.state.game_over
+  if state.game_over
     args.outputs.solids << {
       x: 0, y: 0,
       w: 1280, h: 720,
@@ -241,7 +252,7 @@ def render(args)
 
     args.outputs.labels << {
       x: 640, y: 340,
-      text: "Score: #{args.state.score}",
+      text: "Score: #{state.score}",
       size_enum: 6,
       alignment_enum: 1,
       r: 255, g: 255, b: 255
@@ -256,3 +267,5 @@ def render(args)
     }
   end
 end
+
+
