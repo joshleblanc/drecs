@@ -26,6 +26,8 @@ def boot(args)
 end
 
 def tick(args)
+    args.state.entities.advance_change_tick!
+
     # Get resources
     time = args.state.entities.resource(GameTime)
     config = args.state.entities.resource(GameConfig)
@@ -39,21 +41,22 @@ def tick(args)
         pos.y += vel.dy * config.simulation_speed
     end
 
+    if args.state.tick_count == 1
+        # Add velocity to the tree using the new API
+        if args.state.entities.add_component(args.state.tree, Velocity.new(-5, 0))
+            puts "Tree now has velocity!"
+        end
+    end
+
     if config.show_debug
         puts "--- Tick Report ---"
         puts "Time: #{time.elapsed.round(2)}s | Speed: #{config.simulation_speed}x"
         args.state.entities.each_entity(Position, Tag) do |entity_id, pos, tag|
             puts "#{tag.name} is at #{pos.x.round(2)}, #{pos.y.round(2)}"
         end
+        puts "Velocity changed this tick: #{args.state.entities.count(Velocity, changed: [Velocity])}"
         puts "Entity count: #{args.state.entities.entity_count}"
         puts "Archetype count: #{args.state.entities.archetype_count}"
         puts "-------------------"
-    end
-
-    if args.state.tick_count == 1
-        # Add velocity to the tree using the new API
-        if args.state.entities.add_component(args.state.tree, Velocity.new(-5, 0))
-            puts "Tree now has velocity!"
-        end
     end
 end

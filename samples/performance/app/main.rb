@@ -142,14 +142,22 @@ end
 
 def perform_scenario_work(args, scenario, world)
   if scenario[:migration]
+    # Mark a small subset as changed this tick by "touching" their Position.
+    # We then use change detection to drive the subsequent toggle.
+    world.each_entity(Position) do |entity_id, pos|
+      if rand < 0.01
+        world.set_component(entity_id, Position.new(pos.x, pos.y))
+      end
+    end
+
     to_remove = []
-    world.each_entity(Position, Health) do |entity_id, _pos, _health|
-      to_remove << entity_id if rand < 0.01
+    world.each_entity(Position, Health, changed: [Position]) do |entity_id, _pos, _health|
+      to_remove << entity_id
     end
 
     to_add = []
-    world.each_entity(Position, without: Health) do |entity_id, _pos|
-      to_add << entity_id if rand < 0.01
+    world.each_entity(Position, without: Health, changed: [Position]) do |entity_id, _pos|
+      to_add << entity_id
     end
 
     to_remove.each { |entity_id| world.remove_component(entity_id, Health) }
@@ -264,7 +272,7 @@ def render_menu(args)
       **color
     }
 
-    result = args.state.results.find { |r| r[:name] == scenario[:name] }
+    result = args.state.results&.find { |r| r[:name] == scenario[:name] }
     if result
       args.outputs.labels << {
         x: 880, y: y,
