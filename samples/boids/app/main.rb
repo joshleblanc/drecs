@@ -81,6 +81,8 @@ Size     = Class.new(Vector)
 Color    = Struct.new(:r, :g, :b, :a)
 Grid     = Struct.new(:cells)
 
+BOID_BUNDLE = Drecs.bundle(Position, Size, Color, Velocity)
+
 COHESION = Vector.new(0, 0)
 SEPARATION = Vector.new(0, 0)
 ALIGNMENT = Vector.new(0, 0)
@@ -148,7 +150,7 @@ def boot(args)
     speed = MIN_VELOCITY + rand * (MAX_VELOCITY - MIN_VELOCITY)
     vel.mul!(speed)
 
-    args.state.entities.spawn(pos, size, color, vel)
+    args.state.entities.spawn_bundle(BOID_BUNDLE, pos, size, color, vel)
     i += 1
   end
 end

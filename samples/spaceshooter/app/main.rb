@@ -15,10 +15,13 @@ require_relative 'systems/collision_system.rb'
 require_relative 'systems/hit_event_system.rb'
 require_relative 'systems/render_system.rb'
 
+PLAYER_BUNDLE = Drecs.bundle(Position, Velocity, Sprite, Player)
+ENEMY_BUNDLE = Drecs.bundle(Position, Velocity, Sprite, Enemy)
+
 def boot(args)
   args.state.world = Drecs::World.new
 
-  args.state.world.spawn(
+  args.state.world.spawn_bundle(PLAYER_BUNDLE,
     Position.new(640, 100),
     Velocity.new(0, 0),
     Sprite.new(32, 32, 0, 200, 255),
@@ -26,7 +29,7 @@ def boot(args)
   )
 
   10.times do |i|
-    args.state.world.spawn(
+    args.state.world.spawn_bundle(ENEMY_BUNDLE,
       Position.new(100 + i * 100, 600),
       Velocity.new(2, 0),
       Sprite.new(32, 32, 255, 50, 50),

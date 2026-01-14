@@ -5,6 +5,38 @@ module Drecs
     end
   end
 
+  class Bundle
+    include SignatureHelper
+
+    attr_reader :signature
+
+    def initialize(component_keys)
+      @signature = normalize_signature(component_keys)
+    end
+  end
+
+  class BundleBuilder
+    def initialize
+      @data = {}
+    end
+
+    def []=(key, value)
+      @data[key] = value
+    end
+
+    def [](key)
+      @data[key]
+    end
+
+    def to_h
+      @data
+    end
+  end
+
+  def self.bundle(*component_keys)
+    Bundle.new(component_keys)
+  end
+
   class EntityManager
     def initialize(reuse_entity_ids: true)
       @next_id = 0
@@ -430,6 +462,56 @@ module Drecs
         end
       end
 
+      @entity_archetypes[entity_id] = archetype
+      @entity_rows[entity_id] = row
+      @entity_count += 1
+
+      entity_id
+    end
+
+    def spawn_bundle(bundle, *components)
+      entity_id = @entity_manager.create_entity
+      signature = bundle.signature
+      archetype = find_or_create_archetype(signature)
+
+      comp_hash = nil
+
+      if block_given?
+        builder = BundleBuilder.new
+        yield(builder)
+        comp_hash = builder.to_h
+      elsif components.length == 1 && components[0].is_a?(Hash)
+        comp_hash = components[0]
+      else
+        comp_hash = {}
+        Array.each(components) do |c|
+          if c.is_a?(Hash)
+            comp_hash.merge!(c)
+          else
+            comp_hash[c.class] = c
+          end
+        end
+      end
+
+      i = 0
+      len = signature.length
+      while i < len
+        key = signature[i]
+        unless comp_hash.key?(key)
+          raise ArgumentError, "Missing component for bundle: #{key}"
+        end
+        i += 1
+      end
+
+      ordered = Array.new(len)
+      i = 0
+      while i < len
+        key = signature[i]
+        ordered[i] = comp_hash[key]
+        i += 1
+      end
+
+      row = archetype.add_ordered(entity_id, ordered, @change_tick)
       @entity_archetypes[entity_id] = archetype
       @entity_rows[entity_id] = row
       @entity_count += 1

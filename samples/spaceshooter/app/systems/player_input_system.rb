@@ -1,4 +1,6 @@
 class PlayerInputSystem
+  BULLET_BUNDLE = Drecs.bundle(Position, Velocity, Sprite, Bullet, Lifetime)
+
   def call(world, args)
     world.each_entity(Player, Position, Velocity) do |entity_id, player, pos, vel|
       vel.x = 0
@@ -30,7 +32,7 @@ class PlayerInputSystem
   private
 
   def spawn_bullet(world, x, y)
-    world.spawn(
+    world.spawn_bundle(BULLET_BUNDLE,
       Position.new(x, y),
       Velocity.new(0, 10),
       Sprite.new(4, 12, 255, 255, 0),

@@ -9,6 +9,10 @@ Bullet = Struct.new(:ttl)
 Frozen = Class.new
 HitEvent = Struct.new(:bullet_id, :enemy_id)
 
+PLAYER_BUNDLE = Drecs.bundle(Position, Velocity, Size, Color, Player)
+ENEMY_BUNDLE = Drecs.bundle(Position, Velocity, Size, Color, Enemy)
+BULLET_BUNDLE = Drecs.bundle(Position, Velocity, Size, Color, Bullet)
+
 WORLD_W = 1280
 WORLD_H = 720
 
@@ -22,7 +26,7 @@ def setup(args)
   args.state.game_over = false
   args.state.score = 0
 
-  player_id = world.spawn(
+  player_id = world.spawn_bundle(PLAYER_BUNDLE,
     Position.new(WORLD_W / 2, WORLD_H / 2),
     Velocity.new(0, 0),
     Size.new(18, 18),
@@ -40,7 +44,7 @@ end
 def spawn_enemies(world, count)
   i = 0
   while i < count
-    world.spawn(
+    world.spawn_bundle(ENEMY_BUNDLE,
       Position.new(rand(WORLD_W), rand(WORLD_H)),
       Velocity.new(Numeric.rand(-2.0..2.0), Numeric.rand(-2.0..2.0)),
       Size.new(12, 12),
@@ -119,7 +123,7 @@ def shoot(args, world, player_pos)
   vx = dx / mag * speed
   vy = dy / mag * speed
 
-  world.spawn(
+  world.spawn_bundle(BULLET_BUNDLE,
     Position.new(player_pos.x, player_pos.y),
     Velocity.new(vx, vy),
     Size.new(6, 6),
