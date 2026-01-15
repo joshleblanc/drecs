@@ -6,16 +6,34 @@ module Drecs
   end
 
   module UI
+    Val = Struct.new(:unit, :value)
     UiNode = Struct.new(:name)
     UiLayout = Struct.new(:x, :y, :w, :h, :layout, :padding, :gap, :align, :justify)
     UiStyle = Struct.new(:bg, :border, :border_thickness, :text_color)
     UiText = Struct.new(:text, :size_enum)
     UiRect = Struct.new(:x, :y, :w, :h)
     UiInput = Struct.new(:hovered, :pressed, :on_click)
-    UiScroll = Struct.new(:offset)
+    UiScroll = Struct.new(:x, :y)
+    UiOverflow = Struct.new(:axis)
+    UiScrollRange = Struct.new(:min_x, :max_x, :min_y, :max_y)
+    UiClip = Struct.new(:x, :y, :w, :h)
+    UiInteraction = Struct.new(:state)
+    UiZIndex = Struct.new(:value)
     UiClickEvent = Struct.new(:entity_id)
 
     DEFAULT_LAYOUT = UiLayout.new(0, 0, 0, 0, :column, 0, 4, :start, :start)
+
+    def self.px(value)
+      Val.new(:px, value)
+    end
+
+    def self.percent(value)
+      Val.new(:percent, value)
+    end
+
+    def self.auto
+      Val.new(:auto, nil)
+    end
 
     def self.install(world)
       world.add_system(:ui_layout, system: LayoutSystem.new)
@@ -32,7 +50,11 @@ module Drecs
 
         roots.each do |root_id|
           layout = world.get_component(root_id, UiLayout) || DEFAULT_LAYOUT
-          rect = UiRect.new(layout.x, layout.y, layout.w, layout.h)
+          root_w = resolve_length(layout.w, args.grid.w, args.grid.w)
+          root_h = resolve_length(layout.h, args.grid.h, args.grid.h)
+          root_x = resolve_length(layout.x, args.grid.w, layout.x.to_i)
+          root_y = resolve_length(layout.y, args.grid.h, layout.y.to_i)
+          rect = UiRect.new(root_x, root_y, root_w, root_h)
           world.set_component(root_id, rect)
           layout_children(world, root_id, rect, layout)
         end
@@ -47,28 +69,86 @@ module Drecs
         padding = parent_layout.padding || 0
         gap = parent_layout.gap || 0
         layout_mode = parent_layout.layout || :column
+        align = parent_layout.align || :start
+        justify = parent_layout.justify || :start
+        scroll = world.get_component(parent_id, UiScroll)
+        overflow = world.get_component(parent_id, UiOverflow)
+        scroll_x = scroll&.x.to_f
+        scroll_y = scroll&.y.to_f
+        scroll_axis = overflow&.axis || :y
 
         content_x = parent_rect.x + padding
         content_y = parent_rect.y + padding
         content_w = parent_rect.w - padding * 2
         content_h = parent_rect.h - padding * 2
 
-        cursor_x = content_x
-        cursor_y = content_y + content_h
-
+        rows = []
         children.each do |child_id|
           next unless world.has_component?(child_id, UiNode)
 
           child_layout = world.get_component(child_id, UiLayout) || DEFAULT_LAYOUT
-          child_w = child_layout.w && child_layout.w > 0 ? child_layout.w : content_w
-          child_h = child_layout.h && child_layout.h > 0 ? child_layout.h : estimate_height(world, child_id)
+          child_w = resolve_length(child_layout.w, content_w, content_w)
+          child_h = resolve_length(child_layout.h, content_h, estimate_height(world, child_id))
+          offset_x = resolve_length(child_layout.x, content_w, child_layout.x.to_i)
+          offset_y = resolve_length(child_layout.y, content_h, child_layout.y.to_i)
+
+          rows << {
+            id: child_id,
+            layout: child_layout,
+            w: child_w,
+            h: child_h,
+            offset_x: offset_x,
+            offset_y: offset_y
+          }
+        end
+
+        if layout_mode == :row
+          total_main = rows.sum { |row| row[:w] } + gap * [rows.length - 1, 0].max
+          extra = content_w - total_main
+          extra = 0 if extra.negative?
+          cursor_x = content_x + justify_offset(justify, extra)
+          cursor_y = content_y + content_h
+          if scroll
+            max_scroll_x = [total_main - content_w, 0].max
+            world.set_component(parent_id, UiScrollRange.new(0, max_scroll_x, 0, 0))
+            world.set_component(parent_id, UiClip.new(content_x, content_y, content_w, content_h))
+          end
+        else
+          total_main = rows.sum { |row| row[:h] } + gap * [rows.length - 1, 0].max
+          extra = content_h - total_main
+          extra = 0 if extra.negative?
+          cursor_x = content_x
+          cursor_y = content_y + content_h - justify_offset(justify, extra)
+          if scroll
+            max_scroll_y = [total_main - content_h, 0].max
+            world.set_component(parent_id, UiScrollRange.new(0, 0, 0, max_scroll_y))
+            world.set_component(parent_id, UiClip.new(content_x, content_y, content_w, content_h))
+          end
+        end
+
+        rows.each do |row|
+          child_id = row[:id]
+          child_layout = row[:layout]
+          child_w = row[:w]
+          child_h = row[:h]
+          offset_x = row[:offset_x]
+          offset_y = row[:offset_y]
 
           if layout_mode == :row
-            rect_x = cursor_x + child_layout.x.to_i
-            rect_y = content_y + child_layout.y.to_i
+            rect_x = cursor_x + offset_x
+            rect_y = align_cross_axis(align, content_y, content_h, child_h, offset_y)
           else
-            rect_x = cursor_x + child_layout.x.to_i
-            rect_y = cursor_y - child_h + child_layout.y.to_i
+            rect_x = align_cross_axis(align, content_x, content_w, child_w, offset_x)
+            rect_y = cursor_y - child_h + offset_y
+          end
+
+          if scroll
+            if scroll_axis == :x || scroll_axis == :both
+              rect_x -= scroll_x
+            end
+            if scroll_axis == :y || scroll_axis == :both
+              rect_y -= scroll_y
+            end
           end
 
           rect = UiRect.new(rect_x, rect_y, child_w, child_h)
@@ -90,6 +170,47 @@ module Drecs
         size_enum = text.size_enum || 2
         14 + size_enum * 4
       end
+
+      def resolve_length(value, parent_size, fallback)
+        return fallback if value.nil?
+        return fallback if value.is_a?(Val) && value.unit == :auto
+
+        if value.is_a?(Val)
+          case value.unit
+          when :percent
+            return parent_size * (value.value.to_f / 100.0)
+          when :px
+            return value.value.to_f
+          else
+            return fallback
+          end
+        end
+
+        return fallback if value.is_a?(Numeric) && value <= 0
+        value
+      end
+
+      def justify_offset(justify, extra)
+        case justify
+        when :center
+          extra / 2.0
+        when :end
+          extra
+        else
+          0
+        end
+      end
+
+      def align_cross_axis(align, start_pos, span, child_span, offset)
+        case align
+        when :center
+          start_pos + (span - child_span) / 2.0 + offset
+        when :end
+          start_pos + (span - child_span) + offset
+        else
+          start_pos + offset
+        end
+      end
     end
 
     class InputSystem
@@ -97,43 +218,160 @@ module Drecs
         mouse = args.inputs.mouse
         return unless mouse
 
+        pending_interactions = []
+        entries = []
         world.each_entity(UiRect, UiInput) do |entity_id, rect, input|
-          hovered = point_in_rect?(mouse.x, mouse.y, rect)
+          z = z_index_for(world, entity_id)
+          entries << [entity_id, rect, input, z]
+        end
+
+        hovered_entry = entries
+          .select { |_id, rect, _input, _z| point_in_rect?(mouse.x, mouse.y, rect) }
+          .max_by { |id, _rect, _input, z| z_sort_key(z, id) }
+        hovered_id = hovered_entry&.first
+
+        entries.each do |entity_id, _rect, input, _z|
+          hovered = entity_id == hovered_id
+          pressed = hovered && mouse.click
           input.hovered = hovered
-          input.pressed = hovered && mouse.click
-          if input.pressed
-            world.send_event(UiClickEvent.new(entity_id))
-            input.on_click.call(entity_id, world) if input.on_click
+          input.pressed = pressed
+          set_interaction_state(world, entity_id, hovered, pressed, pending_interactions)
+        end
+
+        pending_interactions.each do |entity_id, state|
+          world.add_component(entity_id, UiInteraction.new(state))
+        end
+
+        if hovered_entry && mouse.click
+          entity_id, _rect, input, _z = hovered_entry
+          world.send_event(UiClickEvent.new(entity_id))
+          input.on_click.call(entity_id, world) if input.on_click
+        end
+
+        wheel = mouse.respond_to?(:wheel) ? mouse.wheel : nil
+        wheel_y = wheel&.y.to_f
+        if wheel_y != 0
+          scroll_entries = []
+          world.each_entity(UiRect, UiScroll) do |entity_id, rect, scroll|
+            scroll_entries << [entity_id, rect, scroll, z_index_for(world, entity_id)]
+          end
+
+          target = scroll_entries
+            .select { |_id, rect, _scroll, _z| point_in_rect?(mouse.x, mouse.y, rect) }
+            .max_by { |id, _rect, _scroll, z| z_sort_key(z, id) }
+
+          if target
+            entity_id, _rect, scroll, _z = target
+            range = world.get_component(entity_id, UiScrollRange)
+            axis = (world.get_component(entity_id, UiOverflow)&.axis) || :y
+            if axis == :y || axis == :both
+              scroll.y = scroll.y.to_f - wheel_y * 20
+              if range
+                scroll.y = scroll.y.clamp(range.min_y, range.max_y)
+              end
+            end
+            if axis == :x || axis == :both
+              scroll.x = scroll.x.to_f - wheel_y * 20
+              if range
+                scroll.x = scroll.x.clamp(range.min_x, range.max_x)
+              end
+            end
           end
         end
       end
 
       private
 
+      def set_interaction_state(world, entity_id, hovered, pressed, pending)
+        interaction = world.get_component(entity_id, UiInteraction)
+        state = if pressed
+          :pressed
+        elsif hovered
+          :hovered
+        else
+          :none
+        end
+
+        if interaction
+          interaction.state = state
+        else
+          pending << [entity_id, state]
+        end
+      end
+
       def point_in_rect?(x, y, rect)
         x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
+      end
+
+      def z_index_for(world, entity_id)
+        z = world.get_component(entity_id, UiZIndex)
+        z ? z.value.to_i : 0
+      end
+
+      def z_sort_key(z, entity_id)
+        (z.to_i * 1_000_000_000) + entity_id.to_i
+      end
+
+      def clip_rect_for(world, entity_id)
+        clip = nil
+        current = entity_id
+        while (parent = world.parent_of(current))
+          current = parent
+          parent_clip = world.get_component(parent, UiClip)
+          next unless parent_clip
+          clip = clip ? intersect_rect(clip, parent_clip) : parent_clip
+          break unless clip
+        end
+        clip
+      end
+
+      def intersect_rect(rect, clip)
+        x1 = [rect.x, clip.x].max
+        y1 = [rect.y, clip.y].max
+        x2 = [rect.x + rect.w, clip.x + clip.w].min
+        y2 = [rect.y + rect.h, clip.y + clip.h].min
+        w = x2 - x1
+        h = y2 - y1
+        return nil if w <= 0 || h <= 0
+        UiRect.new(x1, y1, w, h)
       end
     end
 
     class RenderSystem
       def call(world, args)
-        world.each_entity(UiRect, UiStyle) do |_entity_id, rect, style|
+        style_entries = []
+        world.each_entity(UiRect, UiStyle) do |entity_id, rect, style|
+          style_entries << [entity_id, rect, style, z_index_for(world, entity_id)]
+        end
+
+        style_entries.sort_by { |entity_id, _rect, _style, z| [z, entity_id] }.each do |_entity_id, rect, style, _z|
+          clip = clip_rect_for(world, _entity_id)
+          clipped = clip ? intersect_rect(rect, clip) : rect
+          next unless clipped
+
           if style&.bg
             args.outputs.solids << {
-              x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+              x: clipped.x, y: clipped.y, w: clipped.w, h: clipped.h,
               r: style.bg[:r], g: style.bg[:g], b: style.bg[:b], a: style.bg[:a] || 255
             }
           end
 
           if style&.border
             args.outputs.borders << {
-              x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+              x: clipped.x, y: clipped.y, w: clipped.w, h: clipped.h,
               r: style.border[:r], g: style.border[:g], b: style.border[:b], a: style.border[:a] || 255
             }
           end
         end
 
-        world.each_entity(UiRect, UiText) do |_entity_id, rect, text|
+        text_entries = []
+        world.each_entity(UiRect, UiText) do |entity_id, rect, text|
+          text_entries << [entity_id, rect, text, z_index_for(world, entity_id)]
+        end
+
+        text_entries.sort_by { |entity_id, _rect, _text, z| [z, entity_id] }.each do |_entity_id, rect, text, _z|
+          clip = clip_rect_for(world, _entity_id)
+          next if clip && !intersect_rect(rect, clip)
           color = { r: 255, g: 255, b: 255, a: 255 }
           args.outputs.labels << {
             x: rect.x + 6,
@@ -143,6 +381,37 @@ module Drecs
             r: color[:r], g: color[:g], b: color[:b], a: color[:a]
           }
         end
+      end
+
+      private
+
+      def z_index_for(world, entity_id)
+        z = world.get_component(entity_id, UiZIndex)
+        z ? z.value.to_i : 0
+      end
+
+      def clip_rect_for(world, entity_id)
+        clip = nil
+        current = entity_id
+        while (parent = world.parent_of(current))
+          current = parent
+          parent_clip = world.get_component(parent, UiClip)
+          next unless parent_clip
+          clip = clip ? intersect_rect(clip, parent_clip) : parent_clip
+          break unless clip
+        end
+        clip
+      end
+
+      def intersect_rect(rect, clip)
+        x1 = [rect.x, clip.x].max
+        y1 = [rect.y, clip.y].max
+        x2 = [rect.x + rect.w, clip.x + clip.w].min
+        y2 = [rect.y + rect.h, clip.y + clip.h].min
+        w = x2 - x1
+        h = y2 - y1
+        return nil if w <= 0 || h <= 0
+        UiRect.new(x1, y1, w, h)
       end
     end
   end
@@ -302,6 +571,8 @@ module Drecs
       @ui_children_text_id = nil
       @ui_components_header_id = nil
       @ui_systems_header_id = nil
+      @rows_cache = nil
+      @rows_cache_key = nil
     end
 
     def enabled?
@@ -574,7 +845,7 @@ module Drecs
       set_ui_text(@ui_parent_text_id, "Parent: #{parent_id || '-'}")
       set_ui_text(@ui_children_text_id, "Children: #{@world.children_of(selected_id).join(', ')}")
 
-      rows = build_entity_rows(entities)
+      rows = cached_entity_rows(entities)
       visible_rows = DEFAULT_MAX_LINES
       @scroll_offset = [[@scroll_offset, 0].max, [rows.length * LIST_ROW_HEIGHT - visible_rows * LIST_ROW_HEIGHT, 0].max].min
       first_row = (@scroll_offset / LIST_ROW_HEIGHT).floor
@@ -605,8 +876,7 @@ module Drecs
           fields = component_fields(component)
           fields.each do |field, value|
             editing = editing_field?(selected_id, klass, field)
-            display_value = value.inspect
-            display_value = display_value.length > 60 ? "#{display_value[0, 57]}..." : display_value
+            display_value = format_field_value(value)
             text = editing ? "#{field}: [#{@edit_buffer}]" : "#{field}: #{display_value}"
             component_rows << { text: "  #{text}", editable: { entity_id: selected_id, comp_key: klass, field: field, value: value } }
           end
@@ -635,6 +905,15 @@ module Drecs
       comp.text = text
     end
 
+    def cached_entity_rows(entities)
+      cache_key = [@world.entity_count, @world.archetype_count, @filter_text, @group_expanded.hash]
+      if @rows_cache_key != cache_key
+        @rows_cache = build_entity_rows(entities)
+        @rows_cache_key = cache_key
+      end
+      @rows_cache || []
+    end
+
     def handle_row_click(index)
       row = @ui_row_data[index]
       return unless row
@@ -649,6 +928,17 @@ module Drecs
 
     def format_component_key(key)
       key.is_a?(Class) ? key.name : key.to_s
+    end
+
+    def format_field_value(value)
+      if value.is_a?(Array)
+        return "[Array size=#{value.length}]" if value.length > 20
+      elsif value.is_a?(Hash)
+        return "{Hash size=#{value.length}}" if value.length > 20
+      end
+
+      inspected = value.inspect
+      inspected.length > 60 ? "#{inspected[0, 57]}..." : inspected
     end
 
     def filtered_entity_ids

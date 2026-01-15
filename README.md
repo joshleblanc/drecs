@@ -192,6 +192,61 @@ if world.entity_exists?(entity_id)
 end
 ```
 
+### UI System (Drecs::UI)
+
+Drecs ships with a lightweight ECS-driven UI module. UI elements are regular entities with UI components; the UI is updated via ECS systems just like gameplay logic.
+
+**Setup**
+
+```ruby
+world = Drecs::World.new
+Drecs::UI.install(world)
+```
+
+**Core UI Components**
+
+- `UiNode` — tag component identifying a UI entity.
+- `UiLayout(x, y, w, h, layout, padding, gap, align, justify)`
+  - `x`, `y` are offsets inside the parent container.
+  - `w`, `h` define the size. If `w`/`h` are `0` or `nil`, the layout system stretches to the parent’s content size (minus padding).
+  - `layout` is `:column` or `:row` for child flow direction.
+  - `padding` is inner spacing; `gap` is spacing between children.
+  - `align`/`justify` are reserved for future alignment support.
+- `UiStyle(bg, border, border_thickness, text_color)`
+  - `bg` / `border` are color hashes: `{ r:, g:, b:, a: }`.
+  - `border_thickness` and `text_color` are reserved for future styling.
+- `UiText(text, size_enum)` — text label (rendered using DragonRuby labels).
+- `UiInput(hovered, pressed, on_click)` — click handling; `on_click` gets `(entity_id, world)`.
+
+**Example**
+
+```ruby
+UI = Drecs::UI
+
+root = world.spawn(
+  UI::UiNode.new("root"),
+  UI::UiLayout.new(0, 0, args.grid.w, args.grid.h, :column, 24, 12, :start, :start)
+)
+
+panel = world.spawn(
+  UI::UiNode.new("panel"),
+  UI::UiLayout.new(0, 0, 420, 220, :column, 12, 8, :start, :start),
+  UI::UiStyle.new({ r: 12, g: 12, b: 20, a: 220 }, { r: 50, g: 60, b: 80 }, 1, nil)
+)
+world.set_parent(panel, root)
+
+button = world.spawn(
+  UI::UiNode.new("button"),
+  UI::UiLayout.new(0, 0, 200, 36, :row, 0, 0, :start, :start),
+  UI::UiStyle.new({ r: 40, g: 120, b: 220, a: 230 }, { r: 50, g: 60, b: 80 }, 1, nil),
+  UI::UiText.new("Click me", 2),
+  UI::UiInput.new(false, false, ->(_id, w) { puts "clicked" })
+)
+world.set_parent(button, panel)
+```
+
+See `samples/ui_demo` for a full retained-mode UI example.
+
 ### Querying Entities
 
 The `query` method returns component arrays for high-performance batch processing:
