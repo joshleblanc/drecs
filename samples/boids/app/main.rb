@@ -299,4 +299,6 @@ def tick(args)
     args.outputs.debug << "time: #{time.elapsed.round(2)}s"
     args.outputs.debug << "hooks: color +#{args.state.hook_color_added}/-#{args.state.hook_color_removed}"
   end
+
+  args.state.entities.tick(args)
 end

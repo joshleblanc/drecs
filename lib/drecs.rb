@@ -120,6 +120,389 @@ module Drecs
     end
   end
 
+  class DebugOverlay
+    DEFAULT_MAX_LINES = 24
+    PANEL_PADDING = 12
+    LIST_ROW_HEIGHT = 20
+    LEFT_PANEL_WIDTH = 320
+    TOP_BAR_HEIGHT = 40
+
+    def initialize(world, toggle_key: :f1)
+      @world = world
+      @toggle_key = toggle_key
+      @enabled = false
+      @entity_index = 0
+      @selected_entity_id = nil
+      @scroll_offset = 0
+      @filter_text = ""
+      @filter_active = false
+      @components_expanded = true
+      @systems_expanded = true
+      @component_header_rect = nil
+      @system_header_rect = nil
+      @group_expanded = {}
+    end
+
+    def enabled?
+      @enabled
+    end
+
+    def tick(args)
+      keyboard = args.inputs.keyboard
+      if key_pressed?(keyboard, @toggle_key)
+        @enabled = !@enabled
+      end
+
+      return unless @enabled
+
+      handle_keyboard_input(args)
+      handle_mouse_input(args)
+
+      render(args)
+    end
+
+    private
+
+    def handle_keyboard_input(args)
+      keyboard = args.inputs.keyboard
+      if keyboard.key_down.up
+        @entity_index -= 1
+      elsif keyboard.key_down.down
+        @entity_index += 1
+      end
+      entities = filtered_entity_ids
+      @entity_index = 0 if @entity_index.negative?
+      @entity_index = entities.length - 1 if @entity_index >= entities.length
+      @selected_entity_id = entities[@entity_index] if entities[@entity_index]
+      if keyboard.key_down.backspace && @filter_active && !@filter_text.empty?
+        @filter_text = @filter_text[0..-2]
+      end
+      if @filter_active && (text = args.inputs.text)
+        text = text.join if text.is_a?(Array)
+        @filter_text += text if text && !text.empty?
+      end
+    end
+
+    def handle_mouse_input(args)
+      mouse = args.inputs.mouse
+      return unless mouse
+
+      if mouse.click
+        @filter_active = point_in_rect?(mouse.x, mouse.y, filter_rect(args))
+        if @component_header_rect && point_in_rect?(mouse.x, mouse.y, @component_header_rect)
+          @components_expanded = !@components_expanded
+        elsif @system_header_rect && point_in_rect?(mouse.x, mouse.y, @system_header_rect)
+          @systems_expanded = !@systems_expanded
+        end
+      end
+
+      if (wheel_y = mouse_wheel_y(mouse))
+        @scroll_offset -= wheel_y * LIST_ROW_HEIGHT
+      end
+
+      return unless mouse.click
+
+      rect = entity_list_rect(args)
+      if point_in_rect?(mouse.x, mouse.y, rect)
+        row_idx = ((rect[:y] + rect[:h] - mouse.y - LIST_ROW_HEIGHT) / LIST_ROW_HEIGHT).floor
+        row_idx = 0 if row_idx.negative?
+        rows = build_entity_rows(filtered_entity_ids)
+        row_index = (@scroll_offset / LIST_ROW_HEIGHT).floor + row_idx
+        row = rows[row_index]
+        return unless row
+
+        if row[:type] == :group
+          @group_expanded[row[:key]] = !row[:expanded]
+        elsif row[:type] == :entity
+          entities = filtered_entity_ids
+          @entity_index = entities.index(row[:id]) || 0
+          @selected_entity_id = row[:id]
+        end
+      end
+    end
+
+    def key_pressed?(keyboard, key)
+      return keyboard.key_down.f1 if key == :f1
+      return keyboard.key_down.f2 if key == :f2
+      return keyboard.key_down.f3 if key == :f3
+      return keyboard.key_down.f4 if key == :f4
+      return keyboard.key_down.f5 if key == :f5
+      return keyboard.key_down.f6 if key == :f6
+      return keyboard.key_down.f7 if key == :f7
+      return keyboard.key_down.f8 if key == :f8
+      return keyboard.key_down.f9 if key == :f9
+      return keyboard.key_down.f10 if key == :f10
+      return keyboard.key_down.f11 if key == :f11
+      return keyboard.key_down.f12 if key == :f12
+      false
+    end
+
+    def render(args)
+      w = args.grid.w
+      h = args.grid.h
+      args.outputs.solids << { x: 0, y: 0, w: w, h: h, r: 0, g: 0, b: 0, a: 180 }
+
+      labels = args.outputs.labels
+
+      render_top_bar(labels, w, h)
+      render_left_panel(args, labels, w, h)
+      render_right_panel(args, labels, w, h)
+    end
+
+    def render_top_bar(labels, w, h)
+      labels << {
+        x: PANEL_PADDING,
+        y: h - PANEL_PADDING,
+        text: "Drecs Debug Overlay (#{@toggle_key.to_s.upcase} to toggle)",
+        size_enum: 4,
+        r: 255, g: 255, b: 255
+      }
+      labels << {
+        x: w - PANEL_PADDING,
+        y: h - PANEL_PADDING,
+        text: "Entities: #{@world.entity_count} | Archetypes: #{@world.archetype_count} | Systems: #{system_names.length}",
+        size_enum: 2,
+        alignment_enum: 2,
+        r: 220, g: 220, b: 220
+      }
+    end
+
+    def render_left_panel(args, labels, w, h)
+      rect = left_panel_rect(args)
+      args.outputs.solids << { x: rect[:x], y: rect[:y], w: rect[:w], h: rect[:h], r: 10, g: 10, b: 20, a: 220 }
+
+      filter = filter_rect(args)
+      args.outputs.solids << { x: filter[:x], y: filter[:y], w: filter[:w], h: filter[:h], r: 30, g: 30, b: 50, a: 240 }
+      labels << {
+        x: filter[:x] + 8,
+        y: filter[:y] + filter[:h] - 8,
+        text: @filter_text.empty? ? "Filter components..." : @filter_text,
+        size_enum: 2,
+        r: @filter_active ? 255 : 180,
+        g: @filter_active ? 255 : 180,
+        b: @filter_active ? 200 : 180
+      }
+
+      list = entity_list_rect(args)
+      entities = filtered_entity_ids
+      return if entities.empty?
+
+      rows = build_entity_rows(entities)
+      @scroll_offset = [[@scroll_offset, 0].max, [rows.length * LIST_ROW_HEIGHT - list[:h], 0].max].min
+
+      first_row = (@scroll_offset / LIST_ROW_HEIGHT).floor
+      y = list[:y] + list[:h] - LIST_ROW_HEIGHT + 4
+      visible_rows = (list[:h] / LIST_ROW_HEIGHT).floor
+
+      (0...visible_rows).each do |row|
+        idx = first_row + row
+        break if idx >= rows.length
+        row_data = rows[idx]
+
+        if row_data[:type] == :group
+          labels << {
+            x: list[:x] + 8,
+            y: y,
+            text: "#{row_data[:expanded] ? '▼' : '▶'} #{row_data[:label]} (#{row_data[:count]})",
+            size_enum: 2,
+            r: 150, g: 200, b: 255
+          }
+        else
+          is_selected = row_data[:id] == (@selected_entity_id || entities[@entity_index])
+          labels << {
+            x: list[:x] + 20,
+            y: y,
+            text: "#{is_selected ? '>' : ' '} #{row_data[:id]}",
+            size_enum: 2,
+            r: is_selected ? 255 : 200,
+            g: is_selected ? 255 : 200,
+            b: is_selected ? 140 : 200
+          }
+        end
+        y -= LIST_ROW_HEIGHT
+      end
+    end
+
+    def render_right_panel(args, labels, w, h)
+      rect = right_panel_rect(args)
+      args.outputs.solids << { x: rect[:x], y: rect[:y], w: rect[:w], h: rect[:h], r: 15, g: 15, b: 25, a: 220 }
+
+      entities = filtered_entity_ids
+      return if entities.empty?
+
+      selected_id = @selected_entity_id || entities[@entity_index]
+      y = rect[:y] + rect[:h] - PANEL_PADDING
+
+      labels << section_label("Entity #{selected_id}", y, rect[:x] + PANEL_PADDING)
+      y -= LIST_ROW_HEIGHT
+
+      parent_id = @world.parent_of(selected_id)
+      labels << info_label("Parent: #{parent_id || '-'}", y, rect[:x] + PANEL_PADDING)
+      y -= LIST_ROW_HEIGHT
+      labels << info_label("Children: #{@world.children_of(selected_id).join(', ')}", y, rect[:x] + PANEL_PADDING)
+      y -= LIST_ROW_HEIGHT * 2
+
+      labels << section_label("Components#{@components_expanded ? '' : ' (collapsed)'}", y, rect[:x] + PANEL_PADDING)
+      @component_header_rect = {
+        x: rect[:x] + PANEL_PADDING,
+        y: y - LIST_ROW_HEIGHT + 6,
+        w: rect[:w] - PANEL_PADDING * 2,
+        h: LIST_ROW_HEIGHT
+      }
+      y -= LIST_ROW_HEIGHT
+      if @components_expanded
+        comps = @world.components_for(selected_id) || {}
+        comps.each do |klass, component|
+          value = component.inspect
+          value = value.length > 80 ? "#{value[0, 77]}..." : value
+          labels << {
+            x: rect[:x] + PANEL_PADDING,
+            y: y,
+            text: "#{format_component_key(klass)}: #{value}",
+            size_enum: 2,
+            r: 220, g: 220, b: 220
+          }
+          y -= LIST_ROW_HEIGHT
+          break if y <= rect[:y] + PANEL_PADDING + LIST_ROW_HEIGHT * 6
+        end
+      end
+
+      y -= LIST_ROW_HEIGHT
+      labels << section_label("Systems#{@systems_expanded ? '' : ' (collapsed)'}", y, rect[:x] + PANEL_PADDING)
+      @system_header_rect = {
+        x: rect[:x] + PANEL_PADDING,
+        y: y - LIST_ROW_HEIGHT + 6,
+        w: rect[:w] - PANEL_PADDING * 2,
+        h: LIST_ROW_HEIGHT
+      }
+      y -= LIST_ROW_HEIGHT
+      if @systems_expanded
+        system_names.each do |name|
+          labels << {
+            x: rect[:x] + PANEL_PADDING,
+            y: y,
+            text: name,
+            size_enum: 2,
+            r: 180, g: 220, b: 255
+          }
+          y -= LIST_ROW_HEIGHT
+          break if y <= rect[:y] + PANEL_PADDING
+        end
+      end
+    end
+
+    def format_component_key(key)
+      key.is_a?(Class) ? key.name : key.to_s
+    end
+
+    def filtered_entity_ids
+      entities = @world.all_entity_ids
+      entities.sort!
+      return entities if @filter_text.empty?
+
+      entities.select do |entity_id|
+        comps = @world.components_for(entity_id) || {}
+        comps.any? { |klass, _comp| format_component_key(klass).downcase.include?(@filter_text.downcase) }
+      end
+    end
+
+    def system_names
+      names = []
+      names.concat(@world.scheduled_system_names) if @world.respond_to?(:scheduled_system_names)
+      names.concat(@world.systems.map { |sys| sys.class.name || sys.to_s })
+      names.compact.uniq
+    end
+
+    def left_panel_rect(args)
+      h = args.grid.h
+      {
+        x: PANEL_PADDING,
+        y: PANEL_PADDING,
+        w: LEFT_PANEL_WIDTH,
+        h: h - TOP_BAR_HEIGHT - PANEL_PADDING * 2
+      }
+    end
+
+    def right_panel_rect(args)
+      h = args.grid.h
+      w = args.grid.w
+      {
+        x: LEFT_PANEL_WIDTH + PANEL_PADDING * 2,
+        y: PANEL_PADDING,
+        w: w - LEFT_PANEL_WIDTH - PANEL_PADDING * 3,
+        h: h - TOP_BAR_HEIGHT - PANEL_PADDING * 2
+      }
+    end
+
+    def filter_rect(args)
+      rect = left_panel_rect(args)
+      {
+        x: rect[:x],
+        y: rect[:y] + rect[:h] - LIST_ROW_HEIGHT - PANEL_PADDING,
+        w: rect[:w],
+        h: LIST_ROW_HEIGHT + 4
+      }
+    end
+
+    def entity_list_rect(args)
+      rect = left_panel_rect(args)
+      filter = filter_rect(args)
+      {
+        x: rect[:x],
+        y: rect[:y],
+        w: rect[:w],
+        h: filter[:y] - rect[:y] - PANEL_PADDING
+      }
+    end
+
+    def point_in_rect?(x, y, rect)
+      x >= rect[:x] && x <= rect[:x] + rect[:w] && y >= rect[:y] && y <= rect[:y] + rect[:h]
+    end
+
+    def mouse_wheel_y(mouse)
+      return nil unless mouse.respond_to?(:wheel)
+      wheel = mouse.wheel
+      return nil unless wheel
+      wheel.respond_to?(:y) ? wheel.y : nil
+    end
+
+    def header_label(text, y, x = 20)
+      { x: x, y: y, text: text, size_enum: 4, r: 255, g: 255, b: 255 }
+    end
+
+    def section_label(text, y, x = 20)
+      { x: x, y: y, text: text, size_enum: 3, r: 150, g: 200, b: 255 }
+    end
+
+    def info_label(text, y, x = 20)
+      { x: x, y: y, text: text, size_enum: 2, r: 220, g: 220, b: 220 }
+    end
+
+    def build_entity_rows(entities)
+      rows = []
+      entity_set = entities.to_h { |id| [id, true] }
+
+      @world.archetypes.each_value do |archetype|
+        ids = archetype.entity_ids.select { |id| entity_set[id] }
+        next if ids.empty?
+
+        signature = archetype.component_classes
+        label = signature.map { |k| format_component_key(k) }.join(", ")
+        key = signature.join("|")
+        expanded = @group_expanded.fetch(key, true)
+
+        rows << { type: :group, key: key, label: label.empty? ? "(empty)" : label, count: ids.length, expanded: expanded }
+        if expanded
+          ids.each do |id|
+            rows << { type: :entity, id: id, group: key }
+          end
+        end
+      end
+
+      rows
+    end
+  end
+
   # Relationship components for parent/child graphs.
   Parent = Struct.new(:id)
   Children = Struct.new(:ids)
@@ -455,7 +838,7 @@ module Drecs
   class World
     include SignatureHelper 
     
-    def initialize(reuse_entity_ids: true, validate_components: false)
+    def initialize(reuse_entity_ids: true, validate_components: false, debug_overlay: true)
       @entity_manager = EntityManager.new(reuse_entity_ids: reuse_entity_ids)
       @systems = []
       @scheduled_systems = {}
@@ -487,6 +870,8 @@ module Drecs
       @on_changed = {}
 
       @iterating = 0
+
+      @debug_overlay = debug_overlay ? DebugOverlay.new(self) : nil
     end
 
     def defer(&blk)
@@ -651,6 +1036,7 @@ module Drecs
       end
 
       Array.each(@systems) { _1.call(self, args) }
+      @debug_overlay&.tick(args)
       nil
     end
 
@@ -1517,6 +1903,36 @@ module Drecs
     # Debug/inspection methods for understanding world state
     def entity_count
       @entity_count
+    end
+
+    def debug_overlay
+      @debug_overlay
+    end
+
+    def enable_debug_overlay!(toggle_key: :f1)
+      @debug_overlay = DebugOverlay.new(self, toggle_key: toggle_key)
+    end
+
+    def disable_debug_overlay!
+      @debug_overlay = nil
+    end
+
+    def all_entity_ids
+      ids = []
+      @entity_archetypes.each_with_index do |arch, id|
+        ids << id if arch
+      end
+      ids
+    end
+
+    def components_for(entity_id)
+      archetype = @entity_archetypes[entity_id]
+      return nil unless archetype
+
+      row = @entity_rows[entity_id]
+      archetype.component_classes.to_h do |klass|
+        [klass, archetype.component_stores[klass][row]]
+      end
     end
 
     def archetype_count

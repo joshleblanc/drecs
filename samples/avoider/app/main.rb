@@ -77,6 +77,8 @@ def tick(args)
   apply_events(args, world)
   update_render_cache(args, world)
   render(args, world)
+
+  args.state.world.tick(args)
 end
 
 def handle_input(args, world)
