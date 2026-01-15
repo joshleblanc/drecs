@@ -25,6 +25,10 @@ def setup(args)
   args.state.last_shot_at = 0
   args.state.game_over = false
   args.state.score = 0
+  args.state.hook_bullets_spawned = 0
+  args.state.hook_bullets_removed = 0
+  args.state.hook_frozen_added = 0
+  args.state.hook_frozen_removed = 0
 
   player_id = world.spawn_bundle(PLAYER_BUNDLE,
     Position.new(WORLD_W / 2, WORLD_H / 2),
@@ -37,6 +41,11 @@ def setup(args)
   args.state.player_id = player_id
 
   spawn_enemies(world, 200)
+
+  world.on_added(Bullet) { |_w, _id, _c| args.state.hook_bullets_spawned += 1 }
+  world.on_removed(Bullet) { |_w, _id, _c| args.state.hook_bullets_removed += 1 }
+  world.on_added(Frozen) { |_w, _id, _c| args.state.hook_frozen_added += 1 }
+  world.on_removed(Frozen) { |_w, _id, _c| args.state.hook_frozen_removed += 1 }
 
   world
 end
@@ -376,5 +385,14 @@ def render(args, world)
     r: 180,
     g: 180,
     b: 180
+  }
+
+  args.outputs.labels << {
+    x: 10,
+    y: 670,
+    text: "Hooks: Bullets +#{args.state.hook_bullets_spawned}/-#{args.state.hook_bullets_removed} | Frozen +#{args.state.hook_frozen_added}/-#{args.state.hook_frozen_removed}",
+    r: 160,
+    g: 160,
+    b: 160
   }
 end

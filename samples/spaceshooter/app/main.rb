@@ -20,6 +20,11 @@ ENEMY_BUNDLE = Drecs.bundle(Position, Velocity, Sprite, Enemy)
 
 def boot(args)
   args.state.world = Drecs::World.new
+  args.state.hook_bullets_spawned = 0
+  args.state.hook_bullets_removed = 0
+
+  args.state.world.on_added(Bullet) { |_w, _id, _c| args.state.hook_bullets_spawned += 1 }
+  args.state.world.on_removed(Bullet) { |_w, _id, _c| args.state.hook_bullets_removed += 1 }
 
   args.state.world.spawn_bundle(PLAYER_BUNDLE,
     Position.new(640, 100),
@@ -59,5 +64,13 @@ def tick(args)
     r: 255,
     g: 255,
     b: 255
+  }
+  args.outputs.labels << {
+    x: 10,
+    y: 690,
+    text: "Hooks: Bullets +#{args.state.hook_bullets_spawned}/-#{args.state.hook_bullets_removed}",
+    r: 200,
+    g: 200,
+    b: 200
   }
 end

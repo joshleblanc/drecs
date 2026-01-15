@@ -78,6 +78,12 @@ PheromoneGrid = Struct.new(:to_food, :to_home)
 def boot(args)
   args.state.entities = Drecs::World.new
 
+  args.state.hook_ants_spawned = 0
+  args.state.hook_food_removed = 0
+
+  args.state.entities.on_added(AntState) { |_w, _id, _c| args.state.hook_ants_spawned += 1 }
+  args.state.entities.on_removed(FoodComponent) { |_w, _id, _c| args.state.hook_food_removed += 1 }
+
   # Create pheromone grid
   to_food_grid = Array.new(GRID_COLS) { Array.new(GRID_ROWS) { 0.0 } }
   to_home_grid = Array.new(GRID_COLS) { Array.new(GRID_ROWS) { 0.0 } }
@@ -333,5 +339,6 @@ def tick(args)
   # Debug info
   args.outputs.labels << { x: 10, y: RESOLUTION.h - 10, text: "FPS: #{args.gtk.current_framerate.to_i}", r: 255, g: 255, b: 255 }
   args.outputs.labels << { x: 10, y: RESOLUTION.h - 30, text: "Food stored: #{nest_component.food_stored}", r: 255, g: 255, b: 255 }
-  args.outputs.labels << { x: 10, y: RESOLUTION.h - 50, text: "Press P to toggle pheromones", r: 255, g: 255, b: 255 }
+  args.outputs.labels << { x: 10, y: RESOLUTION.h - 50, text: "Hooks: Ants +#{args.state.hook_ants_spawned} | Food removed #{args.state.hook_food_removed}", r: 220, g: 220, b: 220 }
+  args.outputs.labels << { x: 10, y: RESOLUTION.h - 70, text: "Press P to toggle pheromones", r: 255, g: 255, b: 255 }
 end

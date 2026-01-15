@@ -27,6 +27,12 @@ def boot(args)
     world = args.state.entities
     world.clear_schedule!
 
+    args.state.hook_velocity_added = 0
+    args.state.hook_tag_added = 0
+
+    world.on_added(Velocity) { |_w, _id, _c| args.state.hook_velocity_added += 1 }
+    world.on_added(Tag) { |_w, _id, _c| args.state.hook_tag_added += 1 }
+
     world.add_system(:time) do |w, _a|
         time = w.resource(GameTime)
         config = w.resource(GameConfig)
@@ -49,12 +55,13 @@ def boot(args)
         end
     end
 
-    world.add_system(:debug, after: :tree_velocity, if: ->(w, _a) { (cfg = w.resource(GameConfig)) && cfg.show_debug }) do |w, _a|
+    world.add_system(:debug, after: :tree_velocity, if: ->(w, _a) { (cfg = w.resource(GameConfig)) && cfg.show_debug }) do |w, a|
         time = w.resource(GameTime)
         config = w.resource(GameConfig)
 
         puts "--- Tick Report ---"
         puts "Time: #{time.elapsed.round(2)}s | Speed: #{config.simulation_speed}x"
+        puts "Hooks: Velocity added #{a.state.hook_velocity_added}, Tags added #{a.state.hook_tag_added}"
         w.each_entity(Position, Tag) do |_entity_id, pos, tag|
             puts "#{tag.name} is at #{pos.x.round(2)}, #{pos.y.round(2)}"
         end

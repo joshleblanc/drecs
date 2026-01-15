@@ -135,6 +135,12 @@ def boot(args)
   args.state.entities.insert_resource(GameTime.new(0.0, 0.016))
   args.state.entities.insert_resource(GameConfig.new(BOIDS_COUNT, true, true))
 
+  args.state.hook_color_added = 0
+  args.state.hook_color_removed = 0
+
+  args.state.entities.on_added(Color) { |_w, _id, _c| args.state.hook_color_added += 1 }
+  args.state.entities.on_removed(Color) { |_w, _id, _c| args.state.hook_color_removed += 1 }
+
   # Create a single grid component entity to hold spatial buckets
   args.state.grid = Grid.new(Array.new(GRID_COLS) { Array.new(GRID_ROWS) { [] } })
   args.state.entities.spawn(args.state.grid)
@@ -291,5 +297,6 @@ def tick(args)
     args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
     args.outputs.debug << "boids: #{config.boids_count}"
     args.outputs.debug << "time: #{time.elapsed.round(2)}s"
+    args.outputs.debug << "hooks: color +#{args.state.hook_color_added}/-#{args.state.hook_color_removed}"
   end
 end

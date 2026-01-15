@@ -36,6 +36,11 @@ def setup(args)
   args.state.game_over = false
   args.state.score = 0
   args.state.lines_cleared = 0
+  args.state.hook_blocks_spawned = 0
+  args.state.hook_blocks_removed = 0
+
+  world.on_added(:block) { |_w, _id, _c| args.state.hook_blocks_spawned += 1 }
+  world.on_removed(:block) { |_w, _id, _c| args.state.hook_blocks_removed += 1 }
 
   spawn_piece(world, args)
 
@@ -271,7 +276,15 @@ def render(args)
   }
 
   args.outputs.labels << {
-    x: 750, y: 550,
+    x: 750, y: 560,
+    text: "Hooks: Blocks +#{args.state.hook_blocks_spawned}/-#{args.state.hook_blocks_removed}",
+    size_enum: 3,
+    alignment_enum: 0,
+    r: 180, g: 180, b: 180
+  }
+
+  args.outputs.labels << {
+    x: 750, y: 520,
     text: "Controls:",
     size_enum: 3,
     alignment_enum: 0,
@@ -287,7 +300,7 @@ def render(args)
 
   controls.each_with_index do |control, i|
     args.outputs.labels << {
-      x: 750, y: 520 - i * 30,
+      x: 750, y: 490 - i * 30,
       text: control,
       size_enum: 2,
       alignment_enum: 0,

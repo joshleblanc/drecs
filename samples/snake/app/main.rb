@@ -22,6 +22,14 @@ def setup(args)
   world.insert_resource(GameTime.new(0.0, 0.016))
   world.insert_resource(GameState.new(0, false, 0))
 
+  args.state.hook_food_spawned = 0
+  args.state.hook_food_removed = 0
+  args.state.hook_body_spawned = 0
+
+  world.on_added(:food) { |_w, _id, _c| args.state.hook_food_spawned += 1 }
+  world.on_removed(:food) { |_w, _id, _c| args.state.hook_food_removed += 1 }
+  world.on_added(:snake_body) { |_w, _id, _c| args.state.hook_body_spawned += 1 }
+
   head = world.spawn({
     position: { x: 10, y: 10 },
     velocity: { dx: 1, dy: 0 },
@@ -210,6 +218,17 @@ def render(args)
     r: 255,
     g: 255,
     b: 255
+  }
+
+  args.outputs.labels << {
+    x: 640,
+    y: 660,
+    text: "Hooks: Food +#{args.state.hook_food_spawned}/-#{args.state.hook_food_removed} | Body +#{args.state.hook_body_spawned}",
+    size_enum: 2,
+    alignment_enum: 1,
+    r: 200,
+    g: 200,
+    b: 200
   }
 
   if state.game_over

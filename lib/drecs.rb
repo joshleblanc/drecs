@@ -390,6 +390,10 @@ module Drecs
       @deferred = []
       @resources = {}
       @events = {}
+
+      @on_added = {}
+      @on_removed = {}
+      @on_changed = {}
     end
 
     def defer(&blk)
@@ -401,6 +405,24 @@ module Drecs
       @deferred = []
       deferred.each { _1.call(self) }
       nil
+    end
+
+    def on_added(component_class, &blk)
+      return nil unless blk
+      (@on_added[component_class] ||= []) << blk
+      blk
+    end
+
+    def on_removed(component_class, &blk)
+      return nil unless blk
+      (@on_removed[component_class] ||= []) << blk
+      blk
+    end
+
+    def on_changed(component_class, &blk)
+      return nil unless blk
+      (@on_changed[component_class] ||= []) << blk
+      blk
     end
 
     def systems
@@ -562,6 +584,8 @@ module Drecs
       @entity_rows[entity_id] = row
       @entity_count += 1
 
+      run_added_hooks_for_row(archetype, entity_id, row) unless @on_added.empty?
+
       entity_id
     end
 
@@ -611,6 +635,8 @@ module Drecs
       @entity_archetypes[entity_id] = archetype
       @entity_rows[entity_id] = row
       @entity_count += 1
+
+      run_added_hooks_for_row(archetype, entity_id, row) unless @on_added.empty?
 
       entity_id
     end
@@ -669,6 +695,15 @@ module Drecs
       end
       
       @entity_count += count
+
+      unless @on_added.empty?
+        base_row = start_row
+        i = 0
+        while i < count
+          run_added_hooks_for_row(archetype, ids[i], base_row + i)
+          i += 1
+        end
+      end
       ids
     end
 
@@ -694,6 +729,19 @@ module Drecs
         next unless archetype
 
         removed_row = @entity_rows[entity_id]
+        removed_components = nil
+
+        unless @on_removed.empty?
+          classes = archetype.component_classes
+          stores = archetype.stores_list
+          removed_components = Array.new(classes.length)
+          i = 0
+          len = classes.length
+          while i < len
+            removed_components[i] = [classes[i], stores[i][removed_row]]
+            i += 1
+          end
+        end
         moved_entity_id, is_empty = archetype.remove(removed_row)
 
         if moved_entity_id && moved_entity_id != entity_id
@@ -706,6 +754,16 @@ module Drecs
         @entity_archetypes[entity_id] = nil
         @entity_rows[entity_id] = nil
         @entity_count -= 1
+
+        if removed_components
+          i = 0
+          len = removed_components.length
+          while i < len
+            klass, component = removed_components[i]
+            run_removed_hook(klass, entity_id, component)
+            i += 1
+          end
+        end
       end
 
       cleanup_empty_archetypes(archetypes_to_cleanup)
@@ -746,6 +804,16 @@ module Drecs
         touched[component_key_or_component] = true
       end
 
+      added_keys = []
+      changed_keys = []
+      Array.each(touched.keys) do |k|
+        if old_archetype.component_stores.key?(k)
+          changed_keys << k
+        else
+          added_keys << k
+        end
+      end
+
       # 2. Find the new archetype based on the new signature
       new_signature = normalize_signature(all_components.keys)
       new_archetype = find_or_create_archetype(new_signature)
@@ -767,6 +835,8 @@ module Drecs
           new_archetype.component_changed_at[component_key_or_component][row] = @change_tick
         end
 
+        run_changed_hooks_for_keys(changed_keys, new_archetype, entity_id, row) unless changed_keys.empty?
+
         return true
       end
 
@@ -785,6 +855,9 @@ module Drecs
 
       # 6. Clean up old archetype if it's now empty
       cleanup_empty_archetypes([old_archetype]) if is_empty
+
+      run_added_hooks_for_keys(added_keys, new_archetype, entity_id, new_row) unless added_keys.empty?
+      run_changed_hooks_for_keys(changed_keys, new_archetype, entity_id, new_row) unless changed_keys.empty?
 
       true
     end
@@ -809,6 +882,8 @@ module Drecs
       # If the entity doesn't have the component, nothing to do
       return false unless all_components.key?(component_class)
 
+      removed_component = old_archetype.component_stores[component_class][row]
+
       # 2. Remove the specified component and find/create the new archetype
       all_components.delete(component_class)
       all_changed.delete(component_class)
@@ -830,6 +905,8 @@ module Drecs
 
       # 6. Clean up old archetype if it's now empty
       cleanup_empty_archetypes([old_archetype]) if is_empty
+
+      run_removed_hook(component_class, entity_id, removed_component)
 
       true
     end
@@ -899,6 +976,16 @@ module Drecs
         end
       end
 
+      added_keys = []
+      changed_keys = []
+      Array.each(touched.keys) do |k|
+        if old_archetype.component_stores.key?(k)
+          changed_keys << k
+        else
+          added_keys << k
+        end
+      end
+
       # 3. Find the new archetype based on the new signature
       new_signature = normalize_signature(all_components.keys)
       new_archetype = find_or_create_archetype(new_signature)
@@ -916,6 +1003,8 @@ module Drecs
             new_archetype.component_changed_at[c.class][row] = @change_tick
           end
         end
+
+        run_changed_hooks_for_keys(changed_keys, new_archetype, entity_id, row) unless changed_keys.empty?
         return true
       end
 
@@ -934,6 +1023,9 @@ module Drecs
 
       # 8. Clean up old archetype if it's now empty
       cleanup_empty_archetypes([old_archetype]) if is_empty
+
+      run_added_hooks_for_keys(added_keys, new_archetype, entity_id, new_row) unless added_keys.empty?
+      run_changed_hooks_for_keys(changed_keys, new_archetype, entity_id, new_row) unless changed_keys.empty?
 
       true
     end
@@ -1305,6 +1397,72 @@ module Drecs
     end
 
     private
+
+    def run_added_hooks_for_row(archetype, entity_id, row)
+      hooks = @on_added
+      classes = archetype.component_classes
+      stores = archetype.stores_list
+      i = 0
+      len = classes.length
+      while i < len
+        klass = classes[i]
+        list = hooks[klass]
+        if list && !list.empty?
+          comp = stores[i][row]
+          j = 0
+          j_len = list.length
+          while j < j_len
+            list[j].call(self, entity_id, comp)
+            j += 1
+          end
+        end
+        i += 1
+      end
+    end
+
+    def run_added_hooks_for_keys(keys, archetype, entity_id, row)
+      hooks = @on_added
+      classes = normalize_signature(keys)
+      Array.each(classes) do |klass|
+        list = hooks[klass]
+        next unless list && !list.empty?
+        component = archetype.component_stores[klass][row]
+        j = 0
+        j_len = list.length
+        while j < j_len
+          list[j].call(self, entity_id, component)
+          j += 1
+        end
+      end
+    end
+
+    def run_changed_hooks_for_keys(keys, archetype, entity_id, row)
+      hooks = @on_changed
+      classes = normalize_signature(keys)
+      Array.each(classes) do |klass|
+        list = hooks[klass]
+        next unless list && !list.empty?
+        component = archetype.component_stores[klass][row]
+        j = 0
+        j_len = list.length
+        while j < j_len
+          list[j].call(self, entity_id, component)
+          j += 1
+        end
+      end
+    end
+
+    def run_removed_hook(component_class, entity_id, component)
+      list = @on_removed[component_class]
+      return nil unless list && !list.empty?
+      i = 0
+      len = list.length
+      while i < len
+        list[i].call(self, entity_id, component)
+        i += 1
+      end
+      nil
+    end
 
     def find_or_create_archetype(signature)
       normalized = signature.frozen? ? signature : normalize_signature(signature)

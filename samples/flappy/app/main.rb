@@ -31,6 +31,12 @@ def setup(args)
   world.insert_resource(GameTime.new(0.0, 0.016))
   world.insert_resource(GameState.new(0, false, false, 0))
 
+  args.state.hook_pipes_spawned = 0
+  args.state.hook_pipes_removed = 0
+
+  world.on_added(:pipe) { |_w, _id, _c| args.state.hook_pipes_spawned += 1 }
+  world.on_removed(:pipe) { |_w, _id, _c| args.state.hook_pipes_removed += 1 }
+
   world.spawn({
     position: { x: 200, y: 360 },
     velocity: { dy: 0 },
@@ -223,6 +229,14 @@ def render(args)
     size_enum: 8,
     alignment_enum: 1,
     r: 255, g: 255, b: 255
+  }
+
+  args.outputs.labels << {
+    x: 640, y: 640,
+    text: "Hooks: Pipes +#{args.state.hook_pipes_spawned}/-#{args.state.hook_pipes_removed}",
+    size_enum: 3,
+    alignment_enum: 1,
+    r: 230, g: 230, b: 230
   }
 
   unless state.game_started

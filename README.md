@@ -11,6 +11,7 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 - **Event system** - `send_event` / `each_event` / `clear_events!` for decoupled system communication
 - **Bundles** - Precomputed signatures for common spawns via `Drecs.bundle` and `spawn_bundle`
 - **System scheduling** - Named systems with `after:`/`before:` ordering and `if:` run conditions
+- **Observer hooks** - `on_added` / `on_removed` / `on_changed` for component lifecycle callbacks
 - **Automatic archetype cleanup** - Empty archetypes are removed to prevent memory growth
 - **Flexible component operations** - Add, remove, or batch-update components with archetype migration
 - **Debug/inspection tools** - Built-in methods to understand world state and performance
@@ -34,6 +35,24 @@ require 'joshleblanc/drecs/drecs.rb'
 
 def boot(args)
   args.state.world = Drecs::World.new
+end
+```
+
+### Observer Hooks
+
+Register component lifecycle hooks to react when data is added, removed, or changed. Hooks run in deterministic order based on component class/signature sorting, and can enqueue deferred work.
+
+```ruby
+world.on_added(Position) do |w, entity_id, component|
+  # component was added (or spawned)
+end
+
+world.on_changed(Health) do |w, entity_id, component|
+  # component was updated via add_component or set_components
+end
+
+world.on_removed(Velocity) do |w, entity_id, component|
+  # component was removed or entity destroyed
 end
 ```
 

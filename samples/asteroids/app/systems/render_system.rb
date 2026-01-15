@@ -43,6 +43,13 @@ class RenderSystem
       r: 200, g: 200, b: 200
     }
 
+    args.outputs.labels << {
+      x: 10, y: 640,
+      text: "Hooks: Asteroids +#{args.state.hook_asteroids_spawned}/-#{args.state.hook_asteroids_removed} | Bullets -#{args.state.hook_bullets_removed}",
+      size_enum: 2,
+      r: 180, g: 180, b: 180
+    }
+
     if args.state.game_over
       args.outputs.solids << {
         x: 0, y: 0, w: 1280, h: 720,
