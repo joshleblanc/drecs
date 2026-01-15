@@ -5,6 +5,10 @@ module Drecs
     end
   end
 
+  def self.component(*members)
+    Struct.new(*members)
+  end
+
   module UI
     Val = Struct.new(:unit, :value)
     UiNode = Struct.new(:name)
@@ -1477,6 +1481,8 @@ module Drecs
       @iterating = 0
 
       @debug_overlay = debug_overlay ? DebugOverlay.new(self) : nil
+
+      yield self if block_given?
     end
 
     def defer(&blk)
@@ -1552,6 +1558,10 @@ module Drecs
         @systems << system
         system
       end
+    end
+
+    def system(system = nil, after: nil, before: nil, **kwargs, &blk)
+      add_system(system, after: after, before: before, **kwargs, &blk)
     end
 
     def clear_schedule!
@@ -1688,6 +1698,10 @@ module Drecs
       run_added_hooks_for_row(archetype, entity_id, row) unless @on_added.empty?
 
       entity_id
+    end
+
+    def create(*components)
+      spawn(*components)
     end
 
     def spawn_bundle(bundle, *components)
@@ -2567,6 +2581,10 @@ module Drecs
       else
         @resources[resource_or_key] = value
       end
+    end
+
+    def resource!(resource_or_key, value = nil)
+      insert_resource(resource_or_key, value)
     end
 
     # Retrieve a resource by class or symbol key
