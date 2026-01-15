@@ -23,18 +23,18 @@ class PlayerInputSystem
       end
 
       if args.inputs.keyboard.key_down.space
-        spawn_bullet(world, position, rotation, velocity)
+        spawn_bullet(world, entity_id, position, rotation, velocity)
       end
     end
   end
 
   private
 
-  def spawn_bullet(world, player_pos, player_rotation, player_vel)
+  def spawn_bullet(world, parent_id, player_pos, player_rotation, player_vel)
     angle_rad = player_rotation.angle * Math::PI / 180
     bullet_speed = 12
 
-    world.spawn(
+    bullet_id = world.spawn(
       Position.new(player_pos.x, player_pos.y),
       Velocity.new(
         Math.cos(angle_rad) * bullet_speed + player_vel.dx,
@@ -43,5 +43,6 @@ class PlayerInputSystem
       Collider.new(2),
       Bullet.new(60)
     )
+    world.set_parent(bullet_id, parent_id)
   end
 end

@@ -37,17 +37,21 @@ def setup(args)
     sprite: { r: 0, g: 255, b: 0 }
   })
 
-  world.spawn({
+  args.state.head_id = head
+
+  first_body = world.spawn({
     position: { x: 9, y: 10 },
     snake_body: { index: 1 },
     sprite: { r: 0, g: 200, b: 0 }
   })
+  world.set_parent(first_body, head)
 
-  world.spawn({
+  second_body = world.spawn({
     position: { x: 8, y: 10 },
     snake_body: { index: 2 },
     sprite: { r: 0, g: 200, b: 0 }
   })
+  world.set_parent(second_body, head)
 
   spawn_food(world)
 
@@ -97,6 +101,7 @@ def update_movement(args)
   return if state.game_over
 
   time.elapsed += time.delta
+  state.move_timer += time.delta
 
   return if state.move_timer < MOVE_INTERVAL
 
@@ -167,11 +172,11 @@ def check_collisions(args)
   if food_entity
     world.destroy(food_entity)
     spawn_food(world)
-    grow_snake(world)
+    grow_snake(world, args)
   end
 end
 
-def grow_snake(world)
+def grow_snake(world, args)
   max_index = 0
   last_segment = nil
 
@@ -183,11 +188,12 @@ def grow_snake(world)
   end
 
   if last_segment
-    world.spawn({
+    new_segment = world.spawn({
       position: { x: last_segment[:pos][:x], y: last_segment[:pos][:y] },
       snake_body: { index: max_index + 1 },
       sprite: { r: 0, g: 200, b: 0 }
     })
+    world.set_parent(new_segment, args.state.head_id)
   end
 end
 

@@ -143,8 +143,7 @@ end
 
 def tick(args)
   # Get nest position
-  nest_pos = args.state.entities.get_component(args.state.nest_id, Position)
-  nest_component = args.state.entities.get_component(args.state.nest_id, NestComponent)
+  nest_pos, nest_component = args.state.entities.get_many(args.state.nest_id, Position, NestComponent)
 
   # Get pheromone grids
   pheromone_grid = args.state.pheromone_grid

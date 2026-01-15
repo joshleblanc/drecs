@@ -33,6 +33,10 @@ module Drecs
     end
   end
 
+  # Relationship components for parent/child graphs.
+  Parent = Struct.new(:id)
+  Children = Struct.new(:ids)
+
   def self.bundle(*component_keys)
     Bundle.new(component_keys)
   end
@@ -731,6 +735,22 @@ module Drecs
         removed_row = @entity_rows[entity_id]
         removed_components = nil
 
+        # Relationship cleanup
+        if (parent_store = archetype.component_stores[Parent])
+          parent_comp = parent_store[removed_row]
+          remove_child_from_parent(parent_comp.id, entity_id) if parent_comp
+        end
+
+        if (children_store = archetype.component_stores[Children])
+          children_comp = children_store[removed_row]
+          if children_comp && children_comp.ids
+            Array.each(children_comp.ids) do |child_id|
+              child_parent = get_component(child_id, Parent)
+              remove_component_internal(child_id, Parent, true) if child_parent && child_parent.id == entity_id
+            end
+          end
+        end
+
         unless @on_removed.empty?
           classes = archetype.component_classes
           stores = archetype.stores_list
@@ -866,49 +886,7 @@ module Drecs
 
     # Removes a component from an existing entity. This triggers a move between archetypes.
     def remove_component(entity_id, component_class)
-      old_archetype = @entity_archetypes[entity_id]
-      return false unless old_archetype
-
-      # 1. Gather all current components for the entity
-      row = @entity_rows[entity_id]
-      all_components = old_archetype.component_classes.to_h do |klass|
-        [klass, old_archetype.component_stores[klass][row]]
-      end
-
-      all_changed = old_archetype.component_classes.to_h do |klass|
-        [klass, old_archetype.component_changed_at[klass][row]]
-      end
-
-      # If the entity doesn't have the component, nothing to do
-      return false unless all_components.key?(component_class)
-
-      removed_component = old_archetype.component_stores[component_class][row]
-
-      # 2. Remove the specified component and find/create the new archetype
-      all_components.delete(component_class)
-      all_changed.delete(component_class)
-      new_signature = normalize_signature(all_components.keys)
-      new_archetype = find_or_create_archetype(new_signature)
-
-      # 3. Add entity data to the new archetype
-      new_row = new_archetype.add(entity_id, all_components, all_changed, nil, @change_tick)
-      @entity_archetypes[entity_id] = new_archetype
-      @entity_rows[entity_id] = new_row
-
-      # 4. Remove the entity from the old archetype, filling the hole
-      moved_entity_id, is_empty = old_archetype.remove(row)
-
-      # 5. If another entity was moved to fill the hole, update its location
-      if moved_entity_id && moved_entity_id != entity_id
-        @entity_rows[moved_entity_id] = row
-      end
-
-      # 6. Clean up old archetype if it's now empty
-      cleanup_empty_archetypes([old_archetype]) if is_empty
-
-      run_removed_hook(component_class, entity_id, removed_component)
-
-      true
+      remove_component_internal(entity_id, component_class, false)
     end
 
     alias_method :remove, :remove_component
@@ -946,6 +924,126 @@ module Drecs
       get_component(entity_id, component_class)
     end
 
+    # Retrieves multiple components from a single entity efficiently.
+    # Returns an array of components in the same order as requested, or nil if missing.
+    def get_many(entity_id, *component_classes)
+      archetype = @entity_archetypes[entity_id]
+      return nil unless archetype
+
+      row = @entity_rows[entity_id]
+      stores = archetype.component_stores
+      components = []
+
+      Array.each(component_classes) do |klass|
+        store = stores[klass]
+        return nil unless store
+        components << store[row]
+      end
+
+      components
+    end
+
+    # Yields components for a single entity if all are present.
+    # Returns true when yielded, nil when missing.
+    def with(entity_id, *component_classes)
+      components = get_many(entity_id, *component_classes)
+      return nil unless components
+
+      if block_given?
+        yield(*components)
+        true
+      else
+        components
+      end
+    end
+
+    # Returns the parent id for a child entity, or nil.
+    def parent_of(entity_id)
+      parent = get_component(entity_id, Parent)
+      parent&.id
+    end
+
+    # Returns an array of child ids for a parent entity.
+    def children_of(entity_id)
+      children = get_component(entity_id, Children)
+      children ? children.ids : []
+    end
+
+    # Iterates child ids for a parent entity.
+    def each_child(entity_id, &blk)
+      ids = children_of(entity_id)
+      return ids.to_enum(:each) unless blk
+      ids.each(&blk)
+      nil
+    end
+
+    # Sets the parent for a child entity and updates both sides of the relationship.
+    def set_parent(child_id, parent_id)
+      return clear_parent(child_id) if parent_id.nil?
+      return false unless entity_exists?(child_id)
+      return false unless entity_exists?(parent_id)
+      return false if child_id == parent_id
+
+      current_parent = parent_of(child_id)
+      if current_parent && current_parent != parent_id
+        remove_child_from_parent(current_parent, child_id)
+      end
+
+      children_comp = get_component(parent_id, Children)
+      if children_comp
+        unless children_comp.ids.include?(child_id)
+          children_comp.ids << child_id
+          set_component(parent_id, Children, children_comp)
+        end
+      else
+        add_component(parent_id, Children.new([child_id]))
+      end
+
+      return true if current_parent == parent_id
+
+      set_component(child_id, Parent, Parent.new(parent_id))
+      true
+    end
+
+    # Clears the parent for a child entity and updates both sides of the relationship.
+    def clear_parent(child_id)
+      parent_comp = get_component(child_id, Parent)
+      return false unless parent_comp
+
+      remove_component_internal(child_id, Parent, true)
+      remove_child_from_parent(parent_comp.id, child_id)
+      true
+    end
+
+    def add_child(parent_id, child_id)
+      set_parent(child_id, parent_id)
+    end
+
+    def remove_child(parent_id, child_id)
+      return false unless parent_of(child_id) == parent_id
+      clear_parent(child_id)
+    end
+
+    # Destroys an entity and all of its descendants.
+    def destroy_subtree(root_id)
+      return false unless entity_exists?(root_id)
+
+      to_visit = [root_id]
+      to_destroy = []
+      visited = {}
+
+      until to_visit.empty?
+        id = to_visit.pop
+        next if visited[id]
+        visited[id] = true
+        to_destroy << id
+        children_of(id).each { |child_id| to_visit << child_id }
+      end
+
+      destroy(*to_destroy)
+      true
+    end
+
     # Sets multiple components on an entity in a single operation, avoiding multiple archetype migrations.
     # If the entity doesn't exist, returns false. Components can be added or replaced.
     def set_components(entity_id, *components)
@@ -969,7 +1067,7 @@ module Drecs
       Array.each(components) do |c|
         if c.is_a?(Hash)
           all_components.merge!(c)
-          Array.each(c) { |k, _v| touched[k] = true }
+          c.each { |k, _v| touched[k] = true }
         else
           all_components[c.class] = c
           touched[c.class] = true
@@ -994,7 +1092,7 @@ module Drecs
       if old_archetype == new_archetype
         Array.each(components) do |c|
           if c.is_a?(Hash)
-            Array.each(c) do |k, v|
+            c.each do |k, v|
               new_archetype.component_stores[k][row] = v
               new_archetype.component_changed_at[k][row] = @change_tick
             end
@@ -1377,7 +1475,8 @@ module Drecs
       i = 0
       len = events.length
       while i < len
-        yield(events[i])
+        evt = events[i]
+        yield(evt)
         i += 1
       end
       nil
@@ -1397,6 +1496,78 @@ module Drecs
     end
 
     private
+
+    def remove_child_from_parent(parent_id, child_id)
+      return false unless parent_id
+      children_comp = get_component(parent_id, Children)
+      return false unless children_comp && children_comp.ids
+
+      index = children_comp.ids.index(child_id)
+      return false unless index
+
+      children_comp.ids.delete_at(index)
+
+      if children_comp.ids.empty?
+        remove_component_internal(parent_id, Children, true)
+      else
+        set_component(parent_id, Children, children_comp)
+      end
+
+      true
+    end
+
+    def remove_component_internal(entity_id, component_class, suppress_relationships)
+      old_archetype = @entity_archetypes[entity_id]
+      return false unless old_archetype
+
+      row = @entity_rows[entity_id]
+      all_components = old_archetype.component_classes.to_h do |klass|
+        [klass, old_archetype.component_stores[klass][row]]
+      end
+
+      all_changed = old_archetype.component_classes.to_h do |klass|
+        [klass, old_archetype.component_changed_at[klass][row]]
+      end
+
+      return false unless all_components.key?(component_class)
+
+      removed_component = old_archetype.component_stores[component_class][row]
+
+      unless suppress_relationships
+        if component_class == Parent
+          parent_id = removed_component&.id
+          remove_child_from_parent(parent_id, entity_id) if parent_id
+        elsif component_class == Children
+          if removed_component && removed_component.ids
+            Array.each(removed_component.ids) do |child_id|
+              child_parent = get_component(child_id, Parent)
+              remove_component_internal(child_id, Parent, true) if child_parent && child_parent.id == entity_id
+            end
+          end
+        end
+      end
+
+      all_components.delete(component_class)
+      all_changed.delete(component_class)
+      new_signature = normalize_signature(all_components.keys)
+      new_archetype = find_or_create_archetype(new_signature)
+
+      new_row = new_archetype.add(entity_id, all_components, all_changed, nil, @change_tick)
+      @entity_archetypes[entity_id] = new_archetype
+      @entity_rows[entity_id] = new_row
+
+      moved_entity_id, is_empty = old_archetype.remove(row)
+
+      if moved_entity_id && moved_entity_id != entity_id
+        @entity_rows[moved_entity_id] = row
+      end
+
+      cleanup_empty_archetypes([old_archetype]) if is_empty
+
+      run_removed_hook(component_class, entity_id, removed_component)
+
+      true
+    end
 
     def run_added_hooks_for_row(archetype, entity_id, row)
       hooks = @on_added

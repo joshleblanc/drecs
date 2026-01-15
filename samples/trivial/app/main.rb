@@ -13,7 +13,7 @@ def boot(args)
     args.state.entities.insert_resource(GameTime.new(0.0, 0.016))
     args.state.entities.insert_resource(GameConfig.new(1.0, true))
 
-    args.state.entities.spawn(
+    args.state.player_id = args.state.entities.spawn(
         Position.new(10, 20),
         Velocity.new(1, 0.5),
         Tag.new("Player")
@@ -23,6 +23,8 @@ def boot(args)
         Position.new(100, 100),
         Tag.new("Tree")
     )
+
+    args.state.entities.set_parent(args.state.tree, args.state.player_id)
 
     world = args.state.entities
     world.clear_schedule!
@@ -62,6 +64,9 @@ def boot(args)
         puts "--- Tick Report ---"
         puts "Time: #{time.elapsed.round(2)}s | Speed: #{config.simulation_speed}x"
         puts "Hooks: Velocity added #{a.state.hook_velocity_added}, Tags added #{a.state.hook_tag_added}"
+        player_children = w.children_of(a.state.player_id)
+        puts "Player children: #{player_children}"
+
         w.each_entity(Position, Tag) do |_entity_id, pos, tag|
             puts "#{tag.name} is at #{pos.x.round(2)}, #{pos.y.round(2)}"
         end

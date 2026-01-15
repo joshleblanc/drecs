@@ -23,7 +23,7 @@ class PlayerInputSystem
       end
 
       if args.inputs.keyboard.space && player.fire_cooldown <= 0
-        spawn_bullet(world, pos.x, pos.y + 20)
+        spawn_bullet(world, entity_id, pos.x, pos.y + 20)
         player.fire_cooldown = 15
       end
     end
@@ -31,13 +31,14 @@ class PlayerInputSystem
 
   private
 
-  def spawn_bullet(world, x, y)
-    world.spawn_bundle(BULLET_BUNDLE,
+  def spawn_bullet(world, parent_id, x, y)
+    bullet_id = world.spawn_bundle(BULLET_BUNDLE,
       Position.new(x, y),
       Velocity.new(0, 10),
       Sprite.new(4, 12, 255, 255, 0),
       Bullet.new(1),
       Lifetime.new(120)
     )
+    world.set_parent(bullet_id, parent_id)
   end
 end

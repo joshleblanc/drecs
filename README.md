@@ -12,6 +12,8 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 - **Bundles** - Precomputed signatures for common spawns via `Drecs.bundle` and `spawn_bundle`
 - **System scheduling** - Named systems with `after:`/`before:` ordering and `if:` run conditions
 - **Observer hooks** - `on_added` / `on_removed` / `on_changed` for component lifecycle callbacks
+- **Single-entity access** - `get_many` / `with` for efficient multi-component retrieval
+- **Entity relationships** - `Parent` / `Children` components with helper APIs
 - **Automatic archetype cleanup** - Empty archetypes are removed to prevent memory growth
 - **Flexible component operations** - Add, remove, or batch-update components with archetype migration
 - **Debug/inspection tools** - Built-in methods to understand world state and performance
@@ -339,6 +341,35 @@ end
 world.first_entity(Player, Health) do |entity_id, player, health|
   puts "Player health: #{health.current}/#{health.max}"
 end
+```
+
+### Single Entity Component Access
+
+Retrieve multiple components from one entity without repeated store lookups:
+
+```ruby
+pos, vel = world.get_many(entity_id, Position, Velocity)
+
+world.with(entity_id, Position, Velocity) do |pos, vel|
+  puts "Position: #{pos.x}, #{pos.y}"
+end
+```
+
+### Entity Relationships
+
+Use the built-in `Parent` and `Children` components with helpers to manage hierarchies:
+
+```ruby
+parent_id = world.spawn(Position.new(0, 0))
+child_id = world.spawn(Position.new(10, 10))
+
+world.set_parent(child_id, parent_id)
+
+world.children_of(parent_id) # => [child_id]
+world.parent_of(child_id)    # => parent_id
+
+world.clear_parent(child_id)
+world.destroy_subtree(parent_id)
 ```
 
 ### Destroying Entities

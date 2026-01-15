@@ -81,9 +81,7 @@ end
 
 def handle_input(args, world)
   player_id = args.state.player_id
-  player_pos = world.get_component(player_id, Position)
-  player_vel = world.get_component(player_id, Velocity)
-  player = world.get_component(player_id, Player)
+  player_pos, player_vel, player = world.get_many(player_id, Position, Velocity, Player)
 
   dx = 0
   dy = 0
@@ -132,13 +130,14 @@ def shoot(args, world, player_pos)
   vx = dx / mag * speed
   vy = dy / mag * speed
 
-  world.spawn_bundle(BULLET_BUNDLE,
+  bullet_id = world.spawn_bundle(BULLET_BUNDLE,
     Position.new(player_pos.x, player_pos.y),
     Velocity.new(vx, vy),
     Size.new(6, 6),
     Color.new(255, 255, 120),
     Bullet.new(90)
   )
+  world.set_parent(bullet_id, args.state.player_id)
 end
 
 def toggle_freeze(args, world)
