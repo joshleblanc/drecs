@@ -5,6 +5,148 @@ module Drecs
     end
   end
 
+  module UI
+    UiNode = Struct.new(:name)
+    UiLayout = Struct.new(:x, :y, :w, :h, :layout, :padding, :gap, :align, :justify)
+    UiStyle = Struct.new(:bg, :border, :border_thickness, :text_color)
+    UiText = Struct.new(:text, :size_enum)
+    UiRect = Struct.new(:x, :y, :w, :h)
+    UiInput = Struct.new(:hovered, :pressed, :on_click)
+    UiScroll = Struct.new(:offset)
+    UiClickEvent = Struct.new(:entity_id)
+
+    DEFAULT_LAYOUT = UiLayout.new(0, 0, 0, 0, :column, 0, 4, :start, :start)
+
+    def self.install(world)
+      world.add_system(:ui_layout, system: LayoutSystem.new)
+      world.add_system(:ui_input, after: :ui_layout, system: InputSystem.new)
+      world.add_system(:ui_render, after: :ui_input, system: RenderSystem.new)
+    end
+
+    class LayoutSystem
+      def call(world, args)
+        roots = []
+        world.each_entity(UiNode, UiLayout) do |entity_id, _node, _layout|
+          roots << entity_id unless world.parent_of(entity_id)
+        end
+
+        roots.each do |root_id|
+          layout = world.get_component(root_id, UiLayout) || DEFAULT_LAYOUT
+          rect = UiRect.new(layout.x, layout.y, layout.w, layout.h)
+          world.set_component(root_id, rect)
+          layout_children(world, root_id, rect, layout)
+        end
+      end
+
+      private
+
+      def layout_children(world, parent_id, parent_rect, parent_layout)
+        children = world.children_of(parent_id)
+        return if children.empty?
+
+        padding = parent_layout.padding || 0
+        gap = parent_layout.gap || 0
+        layout_mode = parent_layout.layout || :column
+
+        content_x = parent_rect.x + padding
+        content_y = parent_rect.y + padding
+        content_w = parent_rect.w - padding * 2
+        content_h = parent_rect.h - padding * 2
+
+        cursor_x = content_x
+        cursor_y = content_y + content_h
+
+        children.each do |child_id|
+          next unless world.has_component?(child_id, UiNode)
+
+          child_layout = world.get_component(child_id, UiLayout) || DEFAULT_LAYOUT
+          child_w = child_layout.w && child_layout.w > 0 ? child_layout.w : content_w
+          child_h = child_layout.h && child_layout.h > 0 ? child_layout.h : estimate_height(world, child_id)
+
+          if layout_mode == :row
+            rect_x = cursor_x + child_layout.x.to_i
+            rect_y = content_y + child_layout.y.to_i
+          else
+            rect_x = cursor_x + child_layout.x.to_i
+            rect_y = cursor_y - child_h + child_layout.y.to_i
+          end
+
+          rect = UiRect.new(rect_x, rect_y, child_w, child_h)
+          world.set_component(child_id, rect)
+
+          layout_children(world, child_id, rect, child_layout)
+
+          if layout_mode == :row
+            cursor_x += child_w + gap
+          else
+            cursor_y = rect_y - gap
+          end
+        end
+      end
+
+      def estimate_height(world, child_id)
+        text = world.get_component(child_id, UiText)
+        return 24 unless text
+        size_enum = text.size_enum || 2
+        14 + size_enum * 4
+      end
+    end
+
+    class InputSystem
+      def call(world, args)
+        mouse = args.inputs.mouse
+        return unless mouse
+
+        world.each_entity(UiRect, UiInput) do |entity_id, rect, input|
+          hovered = point_in_rect?(mouse.x, mouse.y, rect)
+          input.hovered = hovered
+          input.pressed = hovered && mouse.click
+          if input.pressed
+            world.send_event(UiClickEvent.new(entity_id))
+            input.on_click.call(entity_id, world) if input.on_click
+          end
+        end
+      end
+
+      private
+
+      def point_in_rect?(x, y, rect)
+        x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
+      end
+    end
+
+    class RenderSystem
+      def call(world, args)
+        world.each_entity(UiRect, UiStyle) do |_entity_id, rect, style|
+          if style&.bg
+            args.outputs.solids << {
+              x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+              r: style.bg[:r], g: style.bg[:g], b: style.bg[:b], a: style.bg[:a] || 255
+            }
+          end
+
+          if style&.border
+            args.outputs.borders << {
+              x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+              r: style.border[:r], g: style.border[:g], b: style.border[:b], a: style.border[:a] || 255
+            }
+          end
+        end
+
+        world.each_entity(UiRect, UiText) do |_entity_id, rect, text|
+          color = { r: 255, g: 255, b: 255, a: 255 }
+          args.outputs.labels << {
+            x: rect.x + 6,
+            y: rect.y + rect.h - 6,
+            text: text.text.to_s,
+            size_enum: text.size_enum || 2,
+            r: color[:r], g: color[:g], b: color[:b], a: color[:a]
+          }
+        end
+      end
+    end
+  end
+
   class Bundle
     include SignatureHelper
 
@@ -126,6 +268,8 @@ module Drecs
     LIST_ROW_HEIGHT = 20
     LEFT_PANEL_WIDTH = 320
     TOP_BAR_HEIGHT = 40
+    COMPONENT_ROW_COUNT = 28
+    SYSTEM_ROW_COUNT = 12
 
     def initialize(world, toggle_key: :f1)
       @world = world
@@ -138,12 +282,26 @@ module Drecs
       @filter_active = false
       @components_expanded = true
       @systems_expanded = true
-      @component_header_rect = nil
-      @system_header_rect = nil
       @group_expanded = {}
       @edit_target = nil
       @edit_buffer = ""
-      @field_rects = []
+      @ui_world = nil
+      @ui_built = false
+      @ui_row_data = []
+      @ui_entity_row_ids = []
+      @ui_entity_row_text_ids = []
+      @ui_component_row_ids = []
+      @ui_component_text_ids = []
+      @ui_system_row_ids = []
+      @ui_system_text_ids = []
+      @ui_title_text_id = nil
+      @ui_stats_text_id = nil
+      @ui_filter_text_id = nil
+      @ui_entity_title_id = nil
+      @ui_parent_text_id = nil
+      @ui_children_text_id = nil
+      @ui_components_header_id = nil
+      @ui_systems_header_id = nil
     end
 
     def enabled?
@@ -205,41 +363,10 @@ module Drecs
       mouse = args.inputs.mouse
       return unless mouse
 
-      if mouse.click
-        @filter_active = point_in_rect?(mouse.x, mouse.y, filter_rect(args))
-        if @component_header_rect && point_in_rect?(mouse.x, mouse.y, @component_header_rect)
-          @components_expanded = !@components_expanded
-        elsif @system_header_rect && point_in_rect?(mouse.x, mouse.y, @system_header_rect)
-          @systems_expanded = !@systems_expanded
-        end
-
-        if (field = field_for_point(mouse.x, mouse.y))
-          start_edit(field)
-          return
-        end
-      end
-
       if (wheel_y = mouse_wheel_y(mouse))
-        @scroll_offset -= wheel_y * LIST_ROW_HEIGHT
-      end
-
-      return unless mouse.click
-
-      rect = entity_list_rect(args)
-      if point_in_rect?(mouse.x, mouse.y, rect)
-        row_idx = ((rect[:y] + rect[:h] - mouse.y - LIST_ROW_HEIGHT) / LIST_ROW_HEIGHT).floor
-        row_idx = 0 if row_idx.negative?
-        rows = build_entity_rows(filtered_entity_ids)
-        row_index = (@scroll_offset / LIST_ROW_HEIGHT).floor + row_idx
-        row = rows[row_index]
-        return unless row
-
-        if row[:type] == :group
-          @group_expanded[row[:key]] = !row[:expanded]
-        elsif row[:type] == :entity
-          entities = filtered_entity_ids
-          @entity_index = entities.index(row[:id]) || 0
-          @selected_entity_id = row[:id]
+        rect = entity_list_rect(args)
+        if point_in_rect?(mouse.x, mouse.y, rect)
+          @scroll_offset -= wheel_y * LIST_ROW_HEIGHT
         end
       end
     end
@@ -261,187 +388,262 @@ module Drecs
     end
 
     def render(args)
-      w = args.grid.w
-      h = args.grid.h
-      args.outputs.solids << { x: 0, y: 0, w: w, h: h, r: 0, g: 0, b: 0, a: 180 }
-
-      labels = args.outputs.labels
-
-      render_top_bar(labels, w, h)
-      render_left_panel(args, labels, w, h)
-      render_right_panel(args, labels, w, h)
+      ui = ui_world
+      build_ui_once(ui, args) unless @ui_built
+      update_ui(args)
+      ui.tick(args)
     end
 
-    def render_top_bar(labels, w, h)
-      labels << {
-        x: PANEL_PADDING,
-        y: h - PANEL_PADDING,
-        text: "Drecs Debug Overlay (#{@toggle_key.to_s.upcase} to toggle)",
-        size_enum: 4,
-        r: 255, g: 255, b: 255
-      }
-      labels << {
-        x: w - PANEL_PADDING,
-        y: h - PANEL_PADDING,
-        text: "Entities: #{@world.entity_count} | Archetypes: #{@world.archetype_count} | Systems: #{system_names.length}",
-        size_enum: 2,
-        alignment_enum: 2,
-        r: 220, g: 220, b: 220
-      }
+    def build_ui_once(ui, args)
+      root = ui.spawn(
+        UI::UiNode.new("root"),
+        UI::UiLayout.new(0, 0, args.grid.w, args.grid.h, :column, PANEL_PADDING, 8, :start, :start)
+      )
+
+      top_bar = ui.spawn(
+        UI::UiNode.new("top_bar"),
+        UI::UiLayout.new(0, 0, args.grid.w - PANEL_PADDING * 2, TOP_BAR_HEIGHT, :row, 0, 16, :start, :start),
+        UI::UiStyle.new({ r: 10, g: 10, b: 20, a: 220 }, { r: 40, g: 40, b: 60 }, 1, nil)
+      )
+      ui.set_parent(top_bar, root)
+
+      @ui_title_text_id = ui.spawn(
+        UI::UiNode.new("title"),
+        UI::UiLayout.new(0, 0, 0, TOP_BAR_HEIGHT, :row, 0, 0, :start, :start),
+        UI::UiText.new("Drecs Debug Overlay (#{@toggle_key.to_s.upcase} to toggle)", 3)
+      )
+      ui.set_parent(@ui_title_text_id, top_bar)
+
+      @ui_stats_text_id = ui.spawn(
+        UI::UiNode.new("stats"),
+        UI::UiLayout.new(0, 0, 0, TOP_BAR_HEIGHT, :row, 0, 0, :start, :start),
+        UI::UiText.new("", 2)
+      )
+      ui.set_parent(@ui_stats_text_id, top_bar)
+
+      content_h = args.grid.h - TOP_BAR_HEIGHT - PANEL_PADDING * 2 - 8
+      content_w = args.grid.w - PANEL_PADDING * 2
+
+      content = ui.spawn(
+        UI::UiNode.new("content"),
+        UI::UiLayout.new(0, 0, content_w, content_h, :row, 0, 12, :start, :start)
+      )
+      ui.set_parent(content, root)
+
+      left_panel = ui.spawn(
+        UI::UiNode.new("left_panel"),
+        UI::UiLayout.new(0, 0, LEFT_PANEL_WIDTH, content_h, :column, 8, 6, :start, :start),
+        UI::UiStyle.new({ r: 10, g: 10, b: 20, a: 220 }, { r: 30, g: 30, b: 50 }, 1, nil)
+      )
+      ui.set_parent(left_panel, content)
+
+      right_panel = ui.spawn(
+        UI::UiNode.new("right_panel"),
+        UI::UiLayout.new(0, 0, content_w - LEFT_PANEL_WIDTH - 12, content_h, :column, 8, 6, :start, :start),
+        UI::UiStyle.new({ r: 15, g: 15, b: 25, a: 220 }, { r: 40, g: 40, b: 60 }, 1, nil)
+      )
+      ui.set_parent(right_panel, content)
+
+      build_filter(ui, left_panel)
+      build_entity_list(ui, left_panel, content_h)
+      build_entity_details(ui, right_panel)
+
+      @ui_built = true
     end
 
-    def render_left_panel(args, labels, w, h)
-      rect = left_panel_rect(args)
-      args.outputs.solids << { x: rect[:x], y: rect[:y], w: rect[:w], h: rect[:h], r: 10, g: 10, b: 20, a: 220 }
+    def build_filter(ui, parent)
+      filter = ui.spawn(
+        UI::UiNode.new("filter"),
+        UI::UiLayout.new(0, 0, LEFT_PANEL_WIDTH - 16, 24, :row, 0, 0, :start, :start),
+        UI::UiStyle.new({ r: 30, g: 30, b: 50, a: 240 }, { r: 60, g: 60, b: 80 }, 1, nil),
+        UI::UiText.new("", 2),
+        UI::UiInput.new(false, false, ->(_id, _w) { @filter_active = true })
+      )
+      ui.set_parent(filter, parent)
+      @ui_filter_text_id = filter
+    end
 
-      filter = filter_rect(args)
-      args.outputs.solids << { x: filter[:x], y: filter[:y], w: filter[:w], h: filter[:h], r: 30, g: 30, b: 50, a: 240 }
-      labels << {
-        x: filter[:x] + 8,
-        y: filter[:y] + filter[:h] - 8,
-        text: @filter_text.empty? ? "Filter components..." : @filter_text,
-        size_enum: 2,
-        r: @filter_active ? 255 : 180,
-        g: @filter_active ? 255 : 180,
-        b: @filter_active ? 200 : 180
-      }
-
-      list = entity_list_rect(args)
-      entities = filtered_entity_ids
-      return if entities.empty?
-
-      rows = build_entity_rows(entities)
-      @scroll_offset = [[@scroll_offset, 0].max, [rows.length * LIST_ROW_HEIGHT - list[:h], 0].max].min
-
-      first_row = (@scroll_offset / LIST_ROW_HEIGHT).floor
-      y = list[:y] + list[:h] - LIST_ROW_HEIGHT + 4
-      visible_rows = (list[:h] / LIST_ROW_HEIGHT).floor
-
-      (0...visible_rows).each do |row|
-        idx = first_row + row
-        break if idx >= rows.length
-        row_data = rows[idx]
-
-        if row_data[:type] == :group
-          labels << {
-            x: list[:x] + 8,
-            y: y,
-            text: "#{row_data[:expanded] ? '▼' : '▶'} #{row_data[:label]} (#{row_data[:count]})",
-            size_enum: 2,
-            r: 150, g: 200, b: 255
-          }
-        else
-          is_selected = row_data[:id] == (@selected_entity_id || entities[@entity_index])
-          labels << {
-            x: list[:x] + 20,
-            y: y,
-            text: "#{is_selected ? '>' : ' '} #{row_data[:id]}",
-            size_enum: 2,
-            r: is_selected ? 255 : 200,
-            g: is_selected ? 255 : 200,
-            b: is_selected ? 140 : 200
-          }
-        end
-        y -= LIST_ROW_HEIGHT
+    def build_entity_list(ui, parent, content_h)
+      list_height = content_h - TOP_BAR_HEIGHT - PANEL_PADDING
+      list_container = ui.spawn(
+        UI::UiNode.new("entity_list"),
+        UI::UiLayout.new(0, 0, LEFT_PANEL_WIDTH - 16, list_height, :column, 0, 0, :start, :start)
+      )
+      ui.set_parent(list_container, parent)
+      DEFAULT_MAX_LINES.times do |idx|
+        row_entity = ui.spawn(
+          UI::UiNode.new("row_#{idx}"),
+          UI::UiLayout.new(0, 0, LEFT_PANEL_WIDTH - 16, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
+          UI::UiText.new("", 2),
+          UI::UiInput.new(false, false, ->(_id, _w) { handle_row_click(idx) })
+        )
+        ui.set_parent(row_entity, list_container)
+        @ui_entity_row_ids << row_entity
+        @ui_entity_row_text_ids << row_entity
       end
     end
 
-    def render_right_panel(args, labels, w, h)
-      rect = right_panel_rect(args)
-      args.outputs.solids << { x: rect[:x], y: rect[:y], w: rect[:w], h: rect[:h], r: 15, g: 15, b: 25, a: 220 }
+    def build_entity_details(ui, parent)
+      entities = filtered_entity_ids
+      return if entities.empty?
+
+      selected_id = @selected_entity_id || entities[@entity_index]
+      @ui_entity_title_id = ui.spawn(
+        UI::UiNode.new("entity_title"),
+        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
+        UI::UiText.new("", 3)
+      )
+      ui.set_parent(@ui_entity_title_id, parent)
+
+      parent_id = @world.parent_of(selected_id)
+      @ui_parent_text_id = ui.spawn(
+        UI::UiNode.new("entity_parent"),
+        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
+        UI::UiText.new("", 2)
+      )
+      ui.set_parent(@ui_parent_text_id, parent)
+
+      children = @world.children_of(selected_id).join(', ')
+      @ui_children_text_id = ui.spawn(
+        UI::UiNode.new("entity_children"),
+        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
+        UI::UiText.new("", 2)
+      )
+      ui.set_parent(@ui_children_text_id, parent)
+
+      @ui_components_header_id = ui.spawn(
+        UI::UiNode.new("components_header"),
+        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
+        UI::UiText.new("", 3),
+        UI::UiInput.new(false, false, ->(_id, _w) { @components_expanded = !@components_expanded })
+      )
+      ui.set_parent(@ui_components_header_id, parent)
+
+      COMPONENT_ROW_COUNT.times do |idx|
+        row = ui.spawn(
+          UI::UiNode.new("component_row_#{idx}"),
+          UI::UiLayout.new(12, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
+          UI::UiText.new("", 2),
+          UI::UiInput.new(false, false, nil)
+        )
+        ui.set_parent(row, parent)
+        @ui_component_row_ids << row
+        @ui_component_text_ids << row
+      end
+
+      @ui_systems_header_id = ui.spawn(
+        UI::UiNode.new("systems_header"),
+        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
+        UI::UiText.new("", 3),
+        UI::UiInput.new(false, false, ->(_id, _w) { @systems_expanded = !@systems_expanded })
+      )
+      ui.set_parent(@ui_systems_header_id, parent)
+
+      SYSTEM_ROW_COUNT.times do |idx|
+        row = ui.spawn(
+          UI::UiNode.new("system_row_#{idx}"),
+          UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
+          UI::UiText.new("", 2)
+        )
+        ui.set_parent(row, parent)
+        @ui_system_row_ids << row
+        @ui_system_text_ids << row
+      end
+    end
+
+    def ui_world
+      return @ui_world if @ui_world
+      @ui_world = Drecs::World.new(debug_overlay: false)
+      UI.install(@ui_world)
+      @ui_world
+    end
+
+    def update_ui(args)
+      stats_text = "Entities: #{@world.entity_count} | Archetypes: #{@world.archetype_count} | Systems: #{system_names.length}"
+      set_ui_text(@ui_stats_text_id, stats_text)
+      set_ui_text(@ui_filter_text_id, @filter_text.empty? ? "Filter components..." : @filter_text)
+      set_ui_text(@ui_components_header_id, "Components#{@components_expanded ? '' : ' (collapsed)'}")
+      set_ui_text(@ui_systems_header_id, "Systems#{@systems_expanded ? '' : ' (collapsed)'}")
 
       entities = filtered_entity_ids
       return if entities.empty?
 
       selected_id = @selected_entity_id || entities[@entity_index]
-      y = rect[:y] + rect[:h] - PANEL_PADDING
-
-      labels << section_label("Entity #{selected_id}", y, rect[:x] + PANEL_PADDING)
-      y -= LIST_ROW_HEIGHT
-
+      set_ui_text(@ui_entity_title_id, "Entity #{selected_id}")
       parent_id = @world.parent_of(selected_id)
-      labels << info_label("Parent: #{parent_id || '-'}", y, rect[:x] + PANEL_PADDING)
-      y -= LIST_ROW_HEIGHT
-      labels << info_label("Children: #{@world.children_of(selected_id).join(', ')}", y, rect[:x] + PANEL_PADDING)
-      y -= LIST_ROW_HEIGHT * 2
+      set_ui_text(@ui_parent_text_id, "Parent: #{parent_id || '-'}")
+      set_ui_text(@ui_children_text_id, "Children: #{@world.children_of(selected_id).join(', ')}")
 
-      labels << section_label("Components#{@components_expanded ? '' : ' (collapsed)'}", y, rect[:x] + PANEL_PADDING)
-      @component_header_rect = {
-        x: rect[:x] + PANEL_PADDING,
-        y: y - LIST_ROW_HEIGHT + 6,
-        w: rect[:w] - PANEL_PADDING * 2,
-        h: LIST_ROW_HEIGHT
-      }
-      y -= LIST_ROW_HEIGHT
+      rows = build_entity_rows(entities)
+      visible_rows = DEFAULT_MAX_LINES
+      @scroll_offset = [[@scroll_offset, 0].max, [rows.length * LIST_ROW_HEIGHT - visible_rows * LIST_ROW_HEIGHT, 0].max].min
+      first_row = (@scroll_offset / LIST_ROW_HEIGHT).floor
+
+      @ui_row_data = []
+      visible_rows.times do |i|
+        idx = first_row + i
+        row_data = rows[idx]
+        @ui_row_data << row_data
+
+        text = ""
+        if row_data
+          text = if row_data[:type] == :group
+            "#{row_data[:expanded] ? '▼' : '▶'} #{row_data[:label]} (#{row_data[:count]})"
+          else
+            marker = row_data[:id] == (@selected_entity_id || entities[@entity_index]) ? '>' : ' '
+            "#{marker} #{row_data[:id]}"
+          end
+        end
+        set_ui_text(@ui_entity_row_text_ids[i], text)
+      end
+
+      component_rows = []
       if @components_expanded
-        @field_rects = []
         comps = @world.components_for(selected_id) || {}
         comps.each do |klass, component|
-          labels << {
-            x: rect[:x] + PANEL_PADDING,
-            y: y,
-            text: format_component_key(klass),
-            size_enum: 2,
-            r: 150, g: 200, b: 255
-          }
-          y -= LIST_ROW_HEIGHT
-
+          component_rows << { text: format_component_key(klass), editable: nil }
           fields = component_fields(component)
           fields.each do |field, value|
+            editing = editing_field?(selected_id, klass, field)
             display_value = value.inspect
             display_value = display_value.length > 60 ? "#{display_value[0, 57]}..." : display_value
-            editing = editing_field?(selected_id, klass, field)
             text = editing ? "#{field}: [#{@edit_buffer}]" : "#{field}: #{display_value}"
-            labels << {
-              x: rect[:x] + PANEL_PADDING * 2,
-              y: y,
-              text: text,
-              size_enum: 2,
-              r: editing ? 255 : 220,
-              g: editing ? 255 : 220,
-              b: editing ? 180 : 220
-            }
-            @field_rects << {
-              rect: {
-                x: rect[:x] + PANEL_PADDING * 2,
-                y: y - LIST_ROW_HEIGHT + 4,
-                w: rect[:w] - PANEL_PADDING * 3,
-                h: LIST_ROW_HEIGHT
-              },
-              entity_id: selected_id,
-              comp_key: klass,
-              field: field,
-              value: value
-            }
-            y -= LIST_ROW_HEIGHT
-            break if y <= rect[:y] + PANEL_PADDING + LIST_ROW_HEIGHT * 6
+            component_rows << { text: "  #{text}", editable: { entity_id: selected_id, comp_key: klass, field: field, value: value } }
           end
-
-          break if y <= rect[:y] + PANEL_PADDING + LIST_ROW_HEIGHT * 6
         end
       end
 
-      y -= LIST_ROW_HEIGHT
-      labels << section_label("Systems#{@systems_expanded ? '' : ' (collapsed)'}", y, rect[:x] + PANEL_PADDING)
-      @system_header_rect = {
-        x: rect[:x] + PANEL_PADDING,
-        y: y - LIST_ROW_HEIGHT + 6,
-        w: rect[:w] - PANEL_PADDING * 2,
-        h: LIST_ROW_HEIGHT
-      }
-      y -= LIST_ROW_HEIGHT
-      if @systems_expanded
-        system_names.each do |name|
-          labels << {
-            x: rect[:x] + PANEL_PADDING,
-            y: y,
-            text: name,
-            size_enum: 2,
-            r: 180, g: 220, b: 255
-          }
-          y -= LIST_ROW_HEIGHT
-          break if y <= rect[:y] + PANEL_PADDING
+      COMPONENT_ROW_COUNT.times do |i|
+        row_data = component_rows[i]
+        set_ui_text(@ui_component_text_ids[i], row_data ? row_data[:text] : "")
+        input = @ui_world.get_component(@ui_component_row_ids[i], UI::UiInput)
+        if input
+          input.on_click = row_data && row_data[:editable] ? ->(_id, _w) { start_edit(row_data[:editable]) } : nil
         end
+      end
+
+      systems = @systems_expanded ? system_names : []
+      SYSTEM_ROW_COUNT.times do |i|
+        set_ui_text(@ui_system_text_ids[i], systems[i] || "")
+      end
+    end
+
+    def set_ui_text(entity_id, text)
+      return unless entity_id
+      comp = @ui_world.get_component(entity_id, UI::UiText)
+      return unless comp
+      comp.text = text
+    end
+
+    def handle_row_click(index)
+      row = @ui_row_data[index]
+      return unless row
+      if row[:type] == :group
+        @group_expanded[row[:key]] = !row[:expanded]
+      elsif row[:type] == :entity
+        entities = filtered_entity_ids
+        @entity_index = entities.index(row[:id]) || 0
+        @selected_entity_id = row[:id]
       end
     end
 
@@ -2007,7 +2209,7 @@ module Drecs
     end
 
     def clear!
-      Array.each(@entity_archetypes) do |arch, id|
+      @entity_archetypes.each_with_index do |arch, id|
         destroy(id) if arch
       end
       nil
