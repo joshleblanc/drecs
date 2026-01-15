@@ -10,6 +10,6 @@ class LifetimeSystem
       end
     end
 
-    world.destroy(*to_destroy)
+    world.commands { |cmd| cmd.destroy(*to_destroy) } unless to_destroy.empty?
   end
 end

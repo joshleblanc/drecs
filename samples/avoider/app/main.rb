@@ -179,7 +179,7 @@ def update_bullets(args, world)
   end
 
   unless expired.empty?
-    world.destroy(*expired)
+    world.commands { |cmd| cmd.destroy(*expired) }
     args.state.to_remove_from_cache.concat(expired)
   end
 end
@@ -257,13 +257,13 @@ def apply_events(args, world)
 
   if !bullets_to_destroy.empty?
     ids = bullets_to_destroy.keys
-    world.destroy(*ids)
+    world.commands { |cmd| cmd.destroy(*ids) }
     args.state.to_remove_from_cache.concat(ids)
   end
 
   if !enemies_to_destroy.empty?
     ids = enemies_to_destroy.keys
-    world.destroy(*ids)
+    world.commands { |cmd| cmd.destroy(*ids) }
     args.state.to_remove_from_cache.concat(ids)
     args.state.score += ids.length
     spawn_enemies(world, ids.length)

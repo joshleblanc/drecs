@@ -33,6 +33,93 @@ module Drecs
     end
   end
 
+  class Commands
+    def initialize
+      @queue = []
+    end
+
+    def spawn(*components)
+      @queue << ->(world) { world.spawn(*components) }
+      self
+    end
+
+    def spawn_bundle(bundle, *components, &blk)
+      @queue << ->(world) { world.spawn_bundle(bundle, *components, &blk) }
+      self
+    end
+
+    def spawn_many(count, *components)
+      @queue << ->(world) { world.spawn_many(count, *components) }
+      self
+    end
+
+    def destroy(*entity_ids)
+      @queue << ->(world) { world.destroy(*entity_ids) }
+      self
+    end
+
+    def add_component(entity_id, component_key_or_component, component_value = nil)
+      @queue << lambda do |world|
+        world.add_component(entity_id, component_key_or_component, component_value)
+      end
+      self
+    end
+
+    def remove_component(entity_id, component_class)
+      @queue << ->(world) { world.remove_component(entity_id, component_class) }
+      self
+    end
+
+    def set_component(entity_id, component_key_or_component, component_value = nil)
+      @queue << lambda do |world|
+        world.set_component(entity_id, component_key_or_component, component_value)
+      end
+      self
+    end
+
+    def set_components(entity_id, *components)
+      @queue << ->(world) { world.set_components(entity_id, *components) }
+      self
+    end
+
+    def set_parent(child_id, parent_id)
+      @queue << ->(world) { world.set_parent(child_id, parent_id) }
+      self
+    end
+
+    def clear_parent(child_id)
+      @queue << ->(world) { world.clear_parent(child_id) }
+      self
+    end
+
+    def add_child(parent_id, child_id)
+      @queue << ->(world) { world.add_child(parent_id, child_id) }
+      self
+    end
+
+    def remove_child(parent_id, child_id)
+      @queue << ->(world) { world.remove_child(parent_id, child_id) }
+      self
+    end
+
+    def destroy_subtree(root_id)
+      @queue << ->(world) { world.destroy_subtree(root_id) }
+      self
+    end
+
+    def defer(&blk)
+      @queue << blk
+      self
+    end
+
+    def apply(world)
+      queue = @queue
+      @queue = []
+      queue.each { |cmd| cmd.call(world) }
+      nil
+    end
+  end
+
   # Relationship components for parent/child graphs.
   Parent = Struct.new(:id)
   Children = Struct.new(:ids)
@@ -398,6 +485,8 @@ module Drecs
       @on_added = {}
       @on_removed = {}
       @on_changed = {}
+
+      @iterating = 0
     end
 
     def defer(&blk)
@@ -409,6 +498,23 @@ module Drecs
       @deferred = []
       deferred.each { _1.call(self) }
       nil
+    end
+
+    def in_iteration?
+      @iterating.positive?
+    end
+
+    def commands
+      buffer = Commands.new
+      if block_given?
+        yield buffer
+        if in_iteration?
+          defer { |w| buffer.apply(w) }
+        else
+          buffer.apply(self)
+        end
+      end
+      buffer
     end
 
     def on_added(component_class, &blk)
@@ -1317,25 +1423,30 @@ module Drecs
         end
       end
 
-      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
-        i = 0
-        len = entity_ids.length
-        num_stores = stores.length
-        
-        while i < len
-          case num_stores
-          when 1 then yield(entity_ids[i], stores[0][i])
-          when 2 then yield(entity_ids[i], stores[0][i], stores[1][i])
-          when 3 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i])
-          when 4 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i], stores[3][i])
-          else
-            yield(entity_ids[i], *stores.map { |s| s[i] })
+      @iterating += 1
+      begin
+        query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+          i = 0
+          len = entity_ids.length
+          num_stores = stores.length
+          
+          while i < len
+            case num_stores
+            when 1 then yield(entity_ids[i], stores[0][i])
+            when 2 then yield(entity_ids[i], stores[0][i], stores[1][i])
+            when 3 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i])
+            when 4 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i], stores[3][i])
+            else
+              yield(entity_ids[i], *stores.map { |s| s[i] })
+            end
+            i += 1
           end
-          i += 1
         end
+      ensure
+        @iterating -= 1
       end
 
-      flush_defer!
+      flush_defer! if @iterating.zero?
     end
 
     alias_method :each, :each_entity

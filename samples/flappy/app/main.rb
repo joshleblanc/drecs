@@ -104,7 +104,7 @@ def update_pipes(args)
     pos[:x] -= PIPE_SPEED
 
     if pos[:x] < -PIPE_WIDTH
-      world.destroy(entity_id)
+      world.commands { |cmd| cmd.destroy(entity_id) }
     end
   end
 
@@ -122,7 +122,7 @@ def update_pipes(args)
     end
 
     if pos[:x] < -10
-      world.destroy(entity_id)
+      world.commands { |cmd| cmd.destroy(entity_id) }
     end
   end
 end

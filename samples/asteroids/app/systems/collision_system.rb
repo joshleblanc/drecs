@@ -38,7 +38,9 @@ class CollisionSystem
       end
     end
 
-    world.destroy(*entities_to_destroy.uniq) unless entities_to_destroy.empty?
+    unless entities_to_destroy.empty?
+      world.commands { |cmd| cmd.destroy(*entities_to_destroy.uniq) }
+    end
 
     asteroids_to_split.each do |asteroid|
       next if asteroid[:asteroid].size <= 1

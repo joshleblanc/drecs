@@ -7,6 +7,8 @@ class BulletSystem
       to_destroy << entity_id if bullet.lifetime <= 0
     end
 
-    world.destroy(*to_destroy) unless to_destroy.empty?
+    unless to_destroy.empty?
+      world.commands { |cmd| cmd.destroy(*to_destroy) }
+    end
   end
 end

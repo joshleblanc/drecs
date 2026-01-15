@@ -170,7 +170,7 @@ def check_collisions(args)
   end
 
   if food_entity
-    world.destroy(food_entity)
+    world.commands { |cmd| cmd.destroy(food_entity) }
     spawn_food(world)
     grow_snake(world, args)
   end

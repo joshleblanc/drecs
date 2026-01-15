@@ -10,7 +10,7 @@ class HitEventSystem
     end
 
     unless ids.empty?
-      world.destroy(*ids.keys)
+      world.commands { |cmd| cmd.destroy(*ids.keys) }
     end
 
     world.clear_events!(HitEvent)

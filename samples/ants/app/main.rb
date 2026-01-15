@@ -213,7 +213,7 @@ def tick(args)
 
           # Destroy food source if empty
           if food_comp.amount <= 0
-            args.state.entities.destroy(entity_id)
+            args.state.entities.commands { |cmd| cmd.destroy(entity_id) }
           end
           break
         elsif dist < 50 && dist < closest_food_dist

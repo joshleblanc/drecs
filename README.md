@@ -307,25 +307,18 @@ This means that if you call `world.tick(args)` (or call `advance_change_tick!` o
 
 #### Deferring World Mutations During Iteration
 
-When iterating entities, you may want to make structural changes to the world (destroy entities, add/remove components, etc.). In those cases, use `defer` to schedule work that should run *after* iteration completes.
-
-`each_entity` automatically calls `flush_defer!` when it finishes.
+When iterating entities, structural changes (destroy/spawn/add/remove) should be deferred. The recommended API is `commands`, which batches mutations safely and applies them after iteration.
 
 ```ruby
 # Safely destroy entities found during iteration
 world.each_entity(Health, Enemy) do |entity_id, health|
   if health.current <= 0
-    world.defer { |w| w.destroy(entity_id) }
+    world.commands { |cmd| cmd.destroy(entity_id) }
   end
 end
 ```
 
-If you call `defer` outside of `each_entity` (or you want to flush sooner), call `flush_defer!` manually:
-
-```ruby
-world.defer { |w| w.spawn(Position.new(0, 0)) }
-world.flush_defer!
-```
+Outside of iteration, `commands` applies immediately. `defer`/`flush_defer!` are still available for low-level control, but `commands` is preferred.
 
 To find just the first matching entity, use `first_entity`:
 
