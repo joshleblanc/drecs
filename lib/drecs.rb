@@ -141,6 +141,9 @@ module Drecs
       @component_header_rect = nil
       @system_header_rect = nil
       @group_expanded = {}
+      @edit_target = nil
+      @edit_buffer = ""
+      @field_rects = []
     end
 
     def enabled?
@@ -174,12 +177,27 @@ module Drecs
       @entity_index = 0 if @entity_index.negative?
       @entity_index = entities.length - 1 if @entity_index >= entities.length
       @selected_entity_id = entities[@entity_index] if entities[@entity_index]
-      if keyboard.key_down.backspace && @filter_active && !@filter_text.empty?
-        @filter_text = @filter_text[0..-2]
-      end
-      if @filter_active && (text = args.inputs.text)
-        text = text.join if text.is_a?(Array)
-        @filter_text += text if text && !text.empty?
+      if @edit_target
+        if keyboard.key_down.backspace && !@edit_buffer.empty?
+          @edit_buffer = @edit_buffer[0..-2]
+        elsif keyboard.key_down.enter
+          commit_edit
+        elsif keyboard.key_down.escape
+          clear_edit
+        else
+          if (text = args.inputs.text)
+            text = text.join if text.is_a?(Array)
+            @edit_buffer += text if text && !text.empty?
+          end
+        end
+      else
+        if keyboard.key_down.backspace && @filter_active && !@filter_text.empty?
+          @filter_text = @filter_text[0..-2]
+        end
+        if @filter_active && (text = args.inputs.text)
+          text = text.join if text.is_a?(Array)
+          @filter_text += text if text && !text.empty?
+        end
       end
     end
 
@@ -193,6 +211,11 @@ module Drecs
           @components_expanded = !@components_expanded
         elsif @system_header_rect && point_in_rect?(mouse.x, mouse.y, @system_header_rect)
           @systems_expanded = !@systems_expanded
+        end
+
+        if (field = field_for_point(mouse.x, mouse.y))
+          start_edit(field)
+          return
         end
       end
 
@@ -351,18 +374,49 @@ module Drecs
       }
       y -= LIST_ROW_HEIGHT
       if @components_expanded
+        @field_rects = []
         comps = @world.components_for(selected_id) || {}
         comps.each do |klass, component|
-          value = component.inspect
-          value = value.length > 80 ? "#{value[0, 77]}..." : value
           labels << {
             x: rect[:x] + PANEL_PADDING,
             y: y,
-            text: "#{format_component_key(klass)}: #{value}",
+            text: format_component_key(klass),
             size_enum: 2,
-            r: 220, g: 220, b: 220
+            r: 150, g: 200, b: 255
           }
           y -= LIST_ROW_HEIGHT
+
+          fields = component_fields(component)
+          fields.each do |field, value|
+            display_value = value.inspect
+            display_value = display_value.length > 60 ? "#{display_value[0, 57]}..." : display_value
+            editing = editing_field?(selected_id, klass, field)
+            text = editing ? "#{field}: [#{@edit_buffer}]" : "#{field}: #{display_value}"
+            labels << {
+              x: rect[:x] + PANEL_PADDING * 2,
+              y: y,
+              text: text,
+              size_enum: 2,
+              r: editing ? 255 : 220,
+              g: editing ? 255 : 220,
+              b: editing ? 180 : 220
+            }
+            @field_rects << {
+              rect: {
+                x: rect[:x] + PANEL_PADDING * 2,
+                y: y - LIST_ROW_HEIGHT + 4,
+                w: rect[:w] - PANEL_PADDING * 3,
+                h: LIST_ROW_HEIGHT
+              },
+              entity_id: selected_id,
+              comp_key: klass,
+              field: field,
+              value: value
+            }
+            y -= LIST_ROW_HEIGHT
+            break if y <= rect[:y] + PANEL_PADDING + LIST_ROW_HEIGHT * 6
+          end
+
           break if y <= rect[:y] + PANEL_PADDING + LIST_ROW_HEIGHT * 6
         end
       end
@@ -500,6 +554,65 @@ module Drecs
       end
 
       rows
+    end
+
+    def component_fields(component)
+      if component.is_a?(Hash)
+        component.map { |k, v| [k, v] }
+      elsif component.is_a?(Struct)
+        component.members.map { |m| [m, component[m]] }
+      else
+        [[:value, component]]
+      end
+    end
+
+    def field_for_point(x, y)
+      @field_rects.find { |field| point_in_rect?(x, y, field[:rect]) }
+    end
+
+    def start_edit(field)
+      @edit_target = field
+      @edit_buffer = field[:value].to_s
+    end
+
+    def clear_edit
+      @edit_target = nil
+      @edit_buffer = ""
+    end
+
+    def editing_field?(entity_id, comp_key, field)
+      @edit_target && @edit_target[:entity_id] == entity_id && @edit_target[:comp_key] == comp_key && @edit_target[:field] == field
+    end
+
+    def commit_edit
+      return unless @edit_target
+
+      entity_id = @edit_target[:entity_id]
+      comp_key = @edit_target[:comp_key]
+      field = @edit_target[:field]
+      original = @edit_target[:value]
+
+      value = coerce_value(@edit_buffer, original)
+      component = @world.get_component(entity_id, comp_key)
+      if component.is_a?(Hash)
+        component[field] = value
+        @world.set_component(entity_id, comp_key, component)
+      elsif component.is_a?(Struct)
+        updated = component.dup
+        updated[field] = value
+        @world.set_component(entity_id, updated)
+      end
+
+      clear_edit
+    end
+
+    def coerce_value(text, original)
+      return text.to_i if original.is_a?(Integer)
+      return text.to_f if original.is_a?(Float)
+      if original.is_a?(TrueClass) || original.is_a?(FalseClass)
+        return text.strip.downcase == "true"
+      end
+      text
     end
   end
 
