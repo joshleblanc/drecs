@@ -9,6 +9,8 @@ module Drecs
     Struct.new(*members)
   end
 
+  Name = Struct.new(:value)
+
   module UI
     Val = Struct.new(:unit, :value)
     UiNode = Struct.new(:name)
@@ -43,6 +45,63 @@ module Drecs
       world.add_system(:ui_layout, system: LayoutSystem.new)
       world.add_system(:ui_input, after: :ui_layout, system: InputSystem.new)
       world.add_system(:ui_render, after: :ui_input, system: RenderSystem.new)
+    end
+
+    def self.build(world, &block)
+      builder = UiBuilder.new(world)
+      return builder unless block
+      block.call(builder)
+      builder
+    end
+
+    class UiBuilder
+      def initialize(world)
+        @world = world
+        @stack = []
+      end
+
+      def root(name: "root", **layout, &block)
+        node(name: name, **layout, &block)
+      end
+
+      def panel(name: "panel", bg: nil, border: nil, border_thickness: 1, **layout, &block)
+        node(name: name, style: UiStyle.new(bg, border, border_thickness, nil), **layout, &block)
+      end
+
+      def text(value, name: "text", size: 2, **layout)
+        node(name: name, text: UiText.new(value, size), **layout)
+      end
+
+      def button(label, name: "button", bg: nil, border: nil, border_thickness: 1, size: 2, **layout, &on_click)
+        node(name: name,
+             text: UiText.new(label, size),
+             style: UiStyle.new(bg, border, border_thickness, nil),
+             input: UiInput.new(false, false, on_click),
+             **layout)
+      end
+
+      def node(name: "node", x: 0, y: 0, w: 0, h: 0, layout: :column, padding: 0, gap: 0,
+               align: :start, justify: :start, style: nil, text: nil, input: nil, scroll: nil,
+               overflow: nil, z: nil, &block)
+        components = [UiNode.new(name), UiLayout.new(x, y, w, h, layout, padding, gap, align, justify)]
+        components << style if style
+        components << text if text
+        components << input if input
+        components << scroll if scroll
+        components << overflow if overflow
+        components << UiZIndex.new(z) if z
+
+        entity_id = @world.spawn(*components)
+        @world.set_parent(entity_id, @stack.last) if @stack.any?
+
+        if block
+          @stack << entity_id
+          block.call(self)
+          @stack.pop
+        end
+
+        entity_id
+      end
     end
 
     class LayoutSystem
@@ -844,7 +903,9 @@ module Drecs
       return if entities.empty?
 
       selected_id = @selected_entity_id || entities[@entity_index]
-      set_ui_text(@ui_entity_title_id, "Entity #{selected_id}")
+      selected_name = @world.name(selected_id)
+      title_text = selected_name ? "Entity #{selected_id} (#{selected_name})" : "Entity #{selected_id}"
+      set_ui_text(@ui_entity_title_id, title_text)
       parent_id = @world.parent_of(selected_id)
       set_ui_text(@ui_parent_text_id, "Parent: #{parent_id || '-'}")
       set_ui_text(@ui_children_text_id, "Children: #{@world.children_of(selected_id).join(', ')}")
@@ -866,7 +927,8 @@ module Drecs
             "#{row_data[:expanded] ? '▼' : '▶'} #{row_data[:label]} (#{row_data[:count]})"
           else
             marker = row_data[:id] == (@selected_entity_id || entities[@entity_index]) ? '>' : ' '
-            "#{marker} #{row_data[:id]}"
+            name_suffix = row_data[:name] ? " - #{row_data[:name]}" : ""
+            "#{marker} #{row_data[:id]}#{name_suffix}"
           end
         end
         set_ui_text(@ui_entity_row_text_ids[i], text)
@@ -1044,7 +1106,7 @@ module Drecs
         rows << { type: :group, key: key, label: label.empty? ? "(empty)" : label, count: ids.length, expanded: expanded }
         if expanded
           ids.each do |id|
-            rows << { type: :entity, id: id, group: key }
+            rows << { type: :entity, id: id, group: key, name: @world.name(id) }
           end
         end
       end
@@ -2030,6 +2092,16 @@ module Drecs
     end
 
     alias_method :get, :get_component
+
+    def name(entity_id, value = nil)
+      if value.nil?
+        component = get_component(entity_id, Name)
+        component&.value
+      else
+        set_component(entity_id, Name, Name.new(value))
+        value
+      end
+    end
 
     def [](entity_id, component_class)
       get_component(entity_id, component_class)

@@ -44,54 +44,30 @@ def boot(args)
 
   world.insert_resource(UiState.new(0, "Click me", false))
 
-  root = world.spawn(
-    UI::UiNode.new("root"),
-    UI::UiLayout.new(0, 0, args.grid.w, args.grid.h, :column, 24, 16, :start, :start)
-  )
+  root = nil
+  panel = nil
+  title = nil
+  message = nil
+  button = nil
+  footer = nil
 
-  panel = world.spawn(
-    UI::UiNode.new("panel"),
-    UI::UiLayout.new(0, 0, 520, 300, :column, 16, 12, :start, :start),
-    UI::UiStyle.new(PRIMARY_BG, PRIMARY_BORDER, 1, nil)
-  )
-  world.set_parent(panel, root)
-
-  title = world.spawn(
-    UI::UiNode.new("title"),
-    UI::UiLayout.new(0, 0, 0, 28, :row, 0, 0, :start, :start),
-    UI::UiText.new("Drecs UI Sample", 3)
-  )
-  world.set_parent(title, panel)
-
-  message = world.spawn(
-    UI::UiNode.new("message"),
-    UI::UiLayout.new(0, 0, 0, 22, :row, 0, 0, :start, :start),
-    UI::UiText.new("", 2)
-  )
-  world.set_parent(message, panel)
-
-  button = world.spawn(
-    UI::UiNode.new("button"),
-    UI::UiLayout.new(0, 0, 220, 36, :row, 0, 0, :start, :start),
-    UI::UiStyle.new(BUTTON_BG, PRIMARY_BORDER, 1, nil),
-    UI::UiText.new("", 2),
-    UI::UiInput.new(false, false, lambda do |id, w|
-      state = w.resource(UiState)
-      style = w.get_component(id, UI::UiStyle)
-      state.active = !state.active
-      state.clicks += 1
-      state.message = state.active ? "Clicked!" : "Click me"
-      style.bg = state.active ? BUTTON_ACTIVE_BG : BUTTON_BG
-    end)
-  )
-  world.set_parent(button, panel)
-
-  footer = world.spawn(
-    UI::UiNode.new("footer"),
-    UI::UiLayout.new(0, 0, 0, 20, :row, 0, 0, :start, :start),
-    UI::UiText.new("", 1)
-  )
-  world.set_parent(footer, panel)
+  UI.build(world) do |ui|
+    root = ui.root(w: args.grid.w, h: args.grid.h, padding: 24, gap: 16) do
+      panel = ui.panel(w: 520, h: 300, padding: 16, gap: 12, bg: PRIMARY_BG, border: PRIMARY_BORDER) do
+        title = ui.text("Drecs UI Sample", size: 3, h: 28)
+        message = ui.text("", size: 2, h: 22)
+        button = ui.button("", w: 220, h: 36, bg: BUTTON_BG, border: PRIMARY_BORDER) do |id, w|
+          state = w.resource(UiState)
+          style = w.get_component(id, UI::UiStyle)
+          state.active = !state.active
+          state.clicks += 1
+          state.message = state.active ? "Clicked!" : "Click me"
+          style.bg = state.active ? BUTTON_ACTIVE_BG : BUTTON_BG
+        end
+        footer = ui.text("", size: 1, h: 20)
+      end
+    end
+  end
 
   world.insert_resource(UiIds.new(root, panel, title, message, button, footer))
 
