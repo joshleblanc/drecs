@@ -2860,11 +2860,65 @@ module Drecs
     def find_or_create_archetype(signature)
       normalized = signature.frozen? ? signature : normalize_signature(signature)
       if !@archetypes.key?(normalized)
-        @archetypes[normalized] = Archetype.new(normalized)
-        @query_cache.clear
+        new_archetype = Archetype.new(normalized)
+        @archetypes[normalized] = new_archetype
+        invalidate_affected_queries(new_archetype)
         Array.each(@active_queries) { _1.refresh! }
       end
       @archetypes[normalized]
+    end
+
+    # Only invalidate cached queries that could potentially match the new archetype
+    def invalidate_affected_queries(new_archetype)
+      return if @query_cache.empty?
+      
+      new_stores = new_archetype.component_stores
+      @query_cache.delete_if do |cache_key, _|
+        query_sig, without_sig, any_sig, _changed_sig = cache_key
+        
+        # Check if archetype has all required components
+        i = 0
+        len = query_sig.length
+        could_match = true
+        while i < len
+          unless new_stores.key?(query_sig[i])
+            could_match = false
+            break
+          end
+          i += 1
+        end
+        
+        # If required components match, check without filter
+        if could_match && without_sig
+          i = 0
+          len = without_sig.length
+          while i < len
+            if new_stores.key?(without_sig[i])
+              could_match = false
+              break
+            end
+            i += 1
+          end
+        end
+        
+        # If still could match, check any filter
+        if could_match && any_sig
+          i = 0
+          len = any_sig.length
+          any_match = false
+          while i < len
+            if new_stores.key?(any_sig[i])
+              any_match = true
+              break
+            end
+            i += 1
+          end
+          could_match = false unless any_match
+        end
+        
+        # Delete from cache if this archetype could match the query
+        could_match
+      end
     end
 
     def cleanup_empty_archetypes(archetypes)
