@@ -49,10 +49,12 @@ def setup_world(args)
 
   args.state.hook_asteroids_spawned = 0
   args.state.hook_asteroids_removed = 0
+  args.state.hook_bullets_spawned = 0
   args.state.hook_bullets_removed = 0
 
   world.on_added(Asteroid) { |_w, _id, _c| args.state.hook_asteroids_spawned += 1 }
   world.on_removed(Asteroid) { |_w, _id, _c| args.state.hook_asteroids_removed += 1 }
+  world.on_added(Bullet) { |_w, _id, _c| args.state.hook_bullets_spawned += 1 }
   world.on_removed(Bullet) { |_w, _id, _c| args.state.hook_bullets_removed += 1 }
 
   ship_points = [

@@ -45,7 +45,7 @@ class RenderSystem
 
     args.outputs.labels << {
       x: 10, y: 640,
-      text: "Hooks: Asteroids +#{args.state.hook_asteroids_spawned}/-#{args.state.hook_asteroids_removed} | Bullets -#{args.state.hook_bullets_removed}",
+      text: "Hooks: Asteroids +#{args.state.hook_asteroids_spawned}/-#{args.state.hook_asteroids_removed} | Bullets +#{args.state.hook_bullets_spawned}/-#{args.state.hook_bullets_removed}",
       size_enum: 2,
       r: 180, g: 180, b: 180
     }
