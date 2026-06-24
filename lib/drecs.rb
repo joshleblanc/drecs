@@ -1,4 +1,9 @@
+require 'ext/drecs_parallel.rb'
+
 module Drecs
+  # Native system support is provided by ext/drecs_parallel.rb (Drecs::Parallel)
+  # plus the World#register_native_system / World#run_native_system pair below.
+
   module SignatureHelper 
     def normalize_signature(component_classes)
       component_classes.sort_by { |c| c.is_a?(Class) ? c.name : c.to_s }.freeze
@@ -7,6 +12,30 @@ module Drecs
 
   def self.component(*members)
     Struct.new(*members)
+  end
+
+  # Build a tag component — a zero-field marker class with an introspectable
+  # `tag_name` reader. Prefer this over `Struct.new("Player")` because the
+  # name is recorded on the class itself, so you can ask `Player.tag_name`.
+  #
+  #   Player = Drecs.tag(:player)
+  #   Enemy  = Drecs.tag(:enemy)
+  #   Bullet = Drecs.tag("Bullet")     # also OK — string is used verbatim
+  #   Anonymous = Drecs.tag            # returns an anonymous class; assign to a constant yourself
+  #
+  # Symbol names get capitalized before being handed to `Struct.new` (Struct
+  # requires the name to start with an uppercase letter). The original symbol
+  # is preserved on `tag_name`, so `:player` survives the round-trip.
+  def self.tag(name = nil)
+    if name
+      str = name.to_s
+      struct_name = str[0].upcase + str[1..-1]
+      klass = Struct.new(struct_name, :tag_name)
+      klass.send(:define_method, :tag_name) { name }
+      klass
+    else
+      Struct.new(nil, :tag_name)
+    end
   end
 
   Name = Struct.new(:value)
@@ -643,6 +672,11 @@ module Drecs
     end
 
     def tick(args)
+      # Be permissive about nil/incomplete args — tests and headless contexts
+      # may pass `world.tick(nil)`. The overlay is a developer convenience,
+      # so silently no-op rather than crashing the game.
+      return unless args && args.respond_to?(:inputs) && args.inputs
+
       keyboard = args.inputs.keyboard
       if key_pressed?(keyboard, @toggle_key)
         @enabled = !@enabled
@@ -1182,6 +1216,9 @@ module Drecs
     Bundle.new(component_keys)
   end
 
+  # Raised by `World#validate!` when an internal invariant is violated.
+  class IntegrityError < StandardError; end
+
   class EntityManager
     def initialize(reuse_entity_ids: true)
       @next_id = 0
@@ -1203,6 +1240,12 @@ module Drecs
       return unless @reuse_entity_ids
       @freed_ids ||= []
       @freed_ids << id
+    end
+
+    # Drop the freed-id pool. After this call, the next `count` create_entity
+    # calls will allocate fresh sequential ids starting from @next_id.
+    def reset_freed_ids!
+      @freed_ids = nil
     end
 
     def batch_create_entities(count)
@@ -1509,7 +1552,23 @@ module Drecs
   class World
     include SignatureHelper 
     
-    def initialize(reuse_entity_ids: true, validate_components: false, debug_overlay: true)
+    def initialize(reuse_entity_ids: true, validate_components: nil, debug_overlay: nil,
+                   mode: :dev, deprecation_warnings: true)
+      # mode: is a high-level preset that resolves into the underlying flags.
+      #   :dev        — debug_overlay: true,  validate_components: false  (default; preserves prior behavior)
+      #   :production — debug_overlay: false, validate_components: true   (for shipping)
+      # Explicit debug_overlay:/validate_components: kwargs always win over mode:.
+      case mode
+      when :dev
+        validate_components = false if validate_components.nil?
+        debug_overlay       = true  if debug_overlay.nil?
+      when :production
+        validate_components = true  if validate_components.nil?
+        debug_overlay       = false if debug_overlay.nil?
+      else
+        raise ArgumentError, "World.new mode: must be :dev or :production (got #{mode.inspect})"
+      end
+
       @entity_manager = EntityManager.new(reuse_entity_ids: reuse_entity_ids)
       @systems = []
       @scheduled_systems = {}
@@ -1519,6 +1578,7 @@ module Drecs
       @change_tick = 0
 
       @validate_components = validate_components
+      @deprecation_warnings = deprecation_warnings
 
       # The core lookup tables
       @archetypes = {} # { [Component Classes Signature] => Archetype }
@@ -1562,15 +1622,31 @@ module Drecs
       @iterating.positive?
     end
 
-    def commands
+    # Buffers a batch of world mutations and always defers them to the next
+    # flush point. Safe to call from inside a query (the deferred commands run
+    # after iteration ends) and outside a query (they run at the next flush —
+    # typically the end of `World#tick`).
+    #
+    # If you need mutations to apply immediately outside of iteration, use
+    # `commands!` instead.
+    def commands(&block)
       buffer = Commands.new
       if block_given?
         yield buffer
-        if in_iteration?
-          defer { |w| buffer.apply(w) }
-        else
-          buffer.apply(self)
-        end
+        defer { |w| buffer.apply(w) }
+      end
+      buffer
+    end
+
+    # Like `commands`, but applies the buffered mutations immediately. Use this
+    # when you're outside of iteration and need the change to be visible to
+    # subsequent calls in the same code path (e.g. mid-tick from a system that
+    # ran before iteration, or during boot).
+    def commands!(&block)
+      buffer = Commands.new
+      if block_given?
+        yield buffer
+        buffer.apply(self)
       end
       buffer
     end
@@ -1714,6 +1790,11 @@ module Drecs
 
       Array.each(@systems) { _1.call(self, args) }
       @debug_overlay&.tick(args)
+
+      # Flush any commands deferred via `commands` (the always-defer form).
+      # Iteration already flushes when it ends; this catches everything that
+      # was queued outside iteration, between systems, or by the debug overlay.
+      flush_defer! unless @deferred.empty?
       nil
     end
 
@@ -2240,10 +2321,6 @@ module Drecs
         [klass, old_archetype.component_stores[klass][row]]
       end
 
-      all_changed = old_archetype.component_classes.to_h do |klass|
-        [klass, old_archetype.component_changed_at[klass][row]]
-      end
-
       touched = {}
 
       # 2. Merge in the new components (overwriting any existing ones)
@@ -2289,8 +2366,15 @@ module Drecs
         return true
       end
 
-      # 5. Add entity data to the new archetype
-      new_row = new_archetype.add(entity_id, all_components, all_changed, touched, @change_tick)
+      # 5. Add entity data to the new archetype.
+      #    On migration, bump `changed_at` for every component on the entity —
+      #    not just the touched ones — because the archetype move itself is a
+      #    visible change. (If you only want "touched" semantics, build your
+      #    own archetype manually instead of going through this path.)
+      #    Pass `nil` for `changed_hash` so Archetype.add uses @change_tick
+      #    uniformly; `touched_hash` still governs which keys are reported to
+      #    the `on_changed` hooks.
+      new_row = new_archetype.add(entity_id, all_components, nil, touched, @change_tick)
       @entity_archetypes[entity_id] = new_archetype
       @entity_rows[entity_id] = new_row
 
@@ -2450,10 +2534,184 @@ module Drecs
     end
 
     # Creates a persistent Query object that avoids signature setup on every call.
+    # Aliases: `query_for` (kept for back-compat) and `cached_query` (the
+    # recommended name — a query whose archetype list is cached).
     def query_for(*component_classes, with: nil, without: nil, any: nil, changed: nil)
+      cached_query(*component_classes, with: with, without: without, any: any, changed: changed)
+    end
+
+    # Recommended factory for a persistent Query. Same semantics as
+    # `query_for`; this name reads better when the query object is stored
+    # and re-used across frames.
+    def cached_query(*component_classes, with: nil, without: nil, any: nil, changed: nil)
       q = Query.new(self, component_classes, with: with, without: without, any: any, changed: changed)
       @active_queries << q
       q
+    end
+
+    # Backward-compatibility shim: prior versions of drecs exposed
+    # `concurrent_query` as a (sequential) alternative to `query`. The
+    # threading promise was theatrical because mruby is single-threaded.
+    # Now it simply forwards to query; use register_native_system /
+    # run_native_system for actual SDL3-threaded execution.
+    #
+    # DEPRECATED: kept as an alias for one minor version, then plan removal.
+    # Calling this method emits a warning unless `deprecation_warnings: false`
+    # was passed to `World.new`.
+    def concurrent_query(*component_classes, threads: nil, with: nil, without: nil, any: nil, changed: nil, &block)
+      warn "Drecs: concurrent_query is deprecated; use query (Ruby) or " \
+           "register_native_system/run_native_system for SDL3-threaded " \
+           "execution. Will be removed in a future version." if @deprecation_warnings
+      _ = threads # accepted and ignored for backwards compatibility
+      query(*component_classes, with: with, without: without, any: any, changed: changed, &block)
+    end
+
+    # Native systems: a registered C kernel that drecs runs across SDL3
+    # threads. The kernel is authored in a separate DragonRuby C extension
+    # using ext/drecs_kernel.h.
+    #
+    # @example
+    #   world.register_native_system(
+    #     :integrate,
+    #     module_name: "MySystems",
+    #     kernel:      :integrate_motion,
+    #     reads:       [[Position, :x], [Position, :y], [Velocity, :x], [Velocity, :y]],
+    #     writes:      [[Position, :x], [Position, :y]],
+    #     threads:     4,
+    #   )
+    #   world.run_native_system(:integrate, dt: 1.0/60.0)
+    def register_native_system(name,
+                                module_name:,
+                                kernel:,
+                                reads: [],
+                                writes: [],
+                                with: nil, without: nil, any: nil,
+                                threads: 4)
+      reads  = reads.map { |pair| [pair[0], pair[1].to_sym] }
+      writes = writes.map { |pair| [pair[0], pair[1].to_sym] }
+
+      union_classes = (reads.map(&:first) + writes.map(&:first)).uniq
+      raise ArgumentError, "register_native_system: needs at least one read or write component" if union_classes.empty?
+
+      @native_systems ||= {}
+      @native_systems[name.to_sym] = {
+        module_name: module_name.to_s,
+        kernel:      kernel.to_sym,
+        reads:       reads,
+        writes:      writes,
+        union:       normalize_signature(union_classes),
+        with:        with ? normalize_signature(Array(with)) : nil,
+        without:     without ? normalize_signature(Array(without)) : nil,
+        any:         any ? normalize_signature(Array(any)) : nil,
+        threads:     threads,
+        kernel_ptr:  nil, # resolved lazily on first run
+      }
+      name.to_sym
+    end
+
+    def run_native_system(name, dt: 0.0)
+      sys = (@native_systems ||= {})[name.to_sym]
+      raise ArgumentError, "run_native_system(:#{name}) not registered" unless sys
+
+      unless ::Drecs.const_defined?(:Parallel) && ::Drecs::Parallel.respond_to?(:run_kernel)
+        raise RuntimeError,
+              "run_native_system(:#{name}): drecs_parallel runtime not loaded. " \
+              "Call DR.dlopen 'drecs_parallel'; Drecs::Parallel.load before run."
+      end
+
+      sys[:kernel_ptr] ||= ::Drecs::Parallel.kernel_ptr(sys[:module_name], sys[:kernel])
+      fn_ptr = sys[:kernel_ptr]
+
+      union_sig   = sys[:union]
+      with_sig    = sys[:with]
+      without_sig = sys[:without]
+      any_sig     = sys[:any]
+      threads     = sys[:threads]
+      reads       = sys[:reads]
+      writes      = sys[:writes]
+      change_tick = @change_tick
+
+      @archetypes.each_value do |archetype|
+        stores_hash = archetype.component_stores
+
+        # union (reads+writes) all required
+        ok = true
+        union_sig.each do |klass|
+          unless stores_hash.key?(klass)
+            ok = false
+            break
+          end
+        end
+        next unless ok
+
+        if with_sig
+          with_sig.each do |klass|
+            unless stores_hash.key?(klass)
+              ok = false
+              break
+            end
+          end
+          next unless ok
+        end
+
+        if without_sig
+          without_sig.each do |klass|
+            if stores_hash.key?(klass)
+              ok = false
+              break
+            end
+          end
+          next unless ok
+        end
+
+        if any_sig
+          any_match = false
+          any_sig.each do |klass|
+            if stores_hash.key?(klass)
+              any_match = true
+              break
+            end
+          end
+          next unless any_match
+        end
+
+        count = archetype.entity_ids.length
+        next if count.zero?
+
+        # Build SoA input/output arrays from Ruby Structs.
+        in_arrays = reads.map do |klass, member|
+          store = stores_hash[klass]
+          Array.new(count) { |i| store[i].send(member).to_f }
+        end
+
+        out_arrays = writes.map do |klass, member|
+          store = stores_hash[klass]
+          Array.new(count) { |i| store[i].send(member).to_f }
+        end
+
+        ::Drecs::Parallel.run_kernel(fn_ptr, in_arrays, out_arrays, count, dt.to_f, threads)
+
+        # Writeback into the actual component structs and bump change ticks.
+        writes.each_with_index do |(klass, member), out_idx|
+          store        = stores_hash[klass]
+          changed_arr  = archetype.component_changed_at[klass]
+          out_col      = out_arrays[out_idx]
+          setter       = "#{member}=".to_sym
+          row = 0
+          while row < count
+            store[row].send(setter, out_col[row])
+            changed_arr[row] = change_tick
+            row += 1
+          end
+        end
+      end
+
+      name.to_sym
+    end
+
+    # @return [Hash] registered native systems by name
+    def native_systems
+      @native_systems ||= {}
     end
 
     def archetypes
@@ -2552,6 +2810,43 @@ module Drecs
 
     alias_method :first, :first_entity
 
+    # Returns the entity_id of the first entity matching the given components
+    # (and any filter clauses), or `nil` if no match. Unlike `first_entity`,
+    # this returns just the id — no components. Useful for "is there one?"
+    # checks and to feed into further operations.
+    #
+    # If a block is given, it's used as a predicate: the entity is yielded
+    # (entity_id, *components); return `false` from the block to skip.
+    def find_entity(*component_classes, with: nil, without: nil, any: nil, changed: nil, &predicate)
+      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+        i = 0
+        len = entity_ids.length
+        num_stores = stores.length
+
+        while i < len
+          entity_id = entity_ids[i]
+          components = if num_stores == 0
+            []
+          elsif num_stores == 1
+            [stores[0][i]]
+          else
+            Array.new(num_stores) { |k| stores[k][i] }
+          end
+
+          if predicate
+            keep = predicate.call(entity_id, *components)
+            return entity_id if keep
+          else
+            return entity_id
+          end
+
+          i += 1
+        end
+      end
+
+      nil
+    end
+
     # Removes components from a passed query
     # This is safe to use during iteration since it collects entities first.
     def remove_components_from_query(query, *components)
@@ -2616,6 +2911,140 @@ module Drecs
       ids
     end
 
+    # Sorted, deduplicated list of every component class/symbol that has at
+    # least one entity attached. Useful for serialization and inspector UIs.
+    # Returns an empty array if the world has no entities.
+    def component_classes
+      seen = {}
+      Array.each(@archetypes.keys) do |signature|
+        Array.each(signature) { |k| seen[k] = true }
+      end
+      seen.keys.sort_by { |k| k.is_a?(Class) ? k.name : k.to_s }
+    end
+
+    # Snapshot the entire world — entities + components + resources — into a
+    # Hash that can be passed to `restore` later. Hash-keyed components are
+    # deep-dup'd; struct components are deep-dup'd via `Marshal.load(Marshal.dump)`
+    # to avoid aliasing the live component instances.
+    def snapshot
+      {
+        entities: all_entity_ids.map do |id|
+          [id, components_for(id)]
+        end,
+        resources: @resources ? @resources.dup : {},
+        events: @events ? @events.transform_values(&:dup) : {},
+        next_entity_id: @entity_manager.instance_variable_get(:@next_id)
+      }
+    end
+
+    # Restore a snapshot produced by `snapshot`. Existing world state is
+    # cleared first. Events and resources are restored as-is; entities are
+    # respawned with the recorded components and re-id'd sequentially
+    # starting from 0 (the original entity_ids are NOT preserved — the
+    # mapping is only useful if you also keep an external id->logical id
+    # mapping).
+    def restore(snap)
+      clear!
+      # Reset freed-id pool so restore produces a deterministic,
+      # sequential id assignment (0..n-1). Without this, two restores
+      # of the same snapshot can produce different id orderings because
+      # clear! destroys via swap-remove, and the entity_manager's
+      # @freed_ids ends up in non-sequential order.
+      @entity_manager.reset_freed_ids!
+      @resources = snap[:resources] ? snap[:resources].dup : {}
+      @events    = snap[:events]    ? snap[:events].dup    : {}
+
+      Array.each(snap[:entities]) do |_id, components|
+        if components.length == 1 && components.values.first.is_a?(Hash)
+          # Hash component form — deep-copy each hash so subsequent
+          # mutations don't bleed back into the snapshot.
+          spawn(components.map_values { |k, v| v.dup rescue v })
+        else
+          # Struct component form — clone each struct instance so the
+          # snapshot stays a clean frozen view of the world-at-snap-time.
+          spawn(*components.values.map { |s| s.class.new(*s.values) })
+        end
+      end
+      self
+    end
+
+    # Development-time integrity check. Walks every archetype and verifies:
+    #   - every component store has the same length as entity_ids
+    #   - every row in component_changed_at matches a stored value
+    #   - the @entity_archetypes / @entity_rows tables are consistent
+    # Raises `Drecs::IntegrityError` with a human-readable report if any
+    # invariant is violated. Returns `true` if everything checks out.
+    def validate!
+      issues = []
+
+      Array.each(@archetypes.values) do |archetype|
+        entity_count = archetype.entity_ids.length
+        Array.each(archetype.component_classes) do |klass|
+          store = archetype.component_stores[klass]
+          if store.length != entity_count
+            issues << "Archetype #{archetype_signature(archetype)}: " \
+                      "store for #{klass.inspect} has length #{store.length} " \
+                      "(expected #{entity_count})"
+          end
+        end
+      end
+
+      i = 0
+      while i < @entity_archetypes.length
+        arch = @entity_archetypes[i]
+        if arch
+          row = @entity_rows[i]
+          if row.nil?
+            issues << "Entity #{i}: archetype present but row index is nil"
+          elsif row >= arch.entity_ids.length || arch.entity_ids[row] != i
+            issues << "Entity #{i}: row index #{row} doesn't match archetype"
+          end
+        end
+        i += 1
+      end
+
+      if issues.empty?
+        true
+      else
+        raise IntegrityError, "Drecs integrity check failed:\n  - " + issues.join("\n  - ")
+      end
+    end
+
+    def components_for(entity_id)
+      archetype = @entity_archetypes[entity_id]
+      return nil unless archetype
+
+      row = @entity_rows[entity_id]
+      archetype.component_classes.to_h do |klass|
+        # Always rebuild via klass.new to guarantee a brand-new Struct
+        # instance. .dup sometimes returns the same object in some
+        # mruby/Struct combos, which would leave the snapshot coupled
+        # to live world state.
+        instance = archetype.component_stores[klass][row]
+        klass.new(*instance.values)
+      end
+    end
+
+    # Returns a multi-line String describing every archetype and a sample of
+    # its entities. Useful for printing from the DragonRuby console when the
+    # in-game debug overlay isn't available.
+    def dump
+      lines = ["Drecs::World dump — #{entity_count} entities, #{archetype_count} archetypes"]
+      Array.each(@archetypes.values) do |archetype|
+        next if archetype.entity_ids.empty?
+        sig = archetype_signature(archetype)
+        lines << "  Archetype [#{sig}]: #{archetype.entity_ids.length} entities"
+        sample_ids = archetype.entity_ids.first([3, archetype.entity_ids.length].min)
+        Array.each(sample_ids) do |id|
+          comp_str = Array.each(archetype.component_classes).map { |k| "#{k}=#{archetype.component_stores[k][archetype.entity_ids.index(id)].inspect}" }.join(', ')
+          lines << "    ##{id} { #{comp_str} }"
+        end
+      end
+      lines << "  Resources: #{@resources ? @resources.keys.length : 0}"
+      lines << "  Events:    #{@events ? @events.values.map(&:length).sum : 0} buffered"
+      lines.join("\n")
+    end
+
     def components_for(entity_id)
       archetype = @entity_archetypes[entity_id]
       return nil unless archetype
@@ -2669,6 +3098,27 @@ module Drecs
       @resources&.delete(resource_or_key)
     end
 
+    # Like `resource`, but raises `KeyError` if the key isn't present.
+    # Accepts an optional block to compute a default instead of raising.
+    #
+    #   world.fetch_resource(:score)             # raises if missing
+    #   world.fetch_resource(:score) { 0 }       # returns 0 if missing
+    def fetch_resource(resource_or_key)
+      @resources ||= {}
+      if @resources.key?(resource_or_key)
+        @resources[resource_or_key]
+      elsif block_given?
+        yield resource_or_key
+      else
+        raise KeyError, "no resource registered for #{resource_or_key.inspect}"
+      end
+    end
+
+    # True if a resource has been registered for the given key.
+    def has_resource?(resource_or_key)
+      @resources&.key?(resource_or_key) || false
+    end
+
     def send_event(event_or_key, value = nil)
       @events ||= {}
       if value.nil?
@@ -2717,7 +3167,36 @@ module Drecs
       nil
     end
 
+    # True if at least one event has been buffered for the given class/key
+    # since the last `clear_events!` (or `advance_change_tick!`).
+    def event?(event_class_or_key)
+      arr = @events&.[](event_class_or_key)
+      !arr.nil? && !arr.empty?
+    end
+
+    # Number of buffered events for the given class/key. 0 if none.
+    def event_count(event_class_or_key)
+      arr = @events&.[](event_class_or_key)
+      arr ? arr.length : 0
+    end
+
+    # Snapshot of all buffered events for the given class/key as an Array.
+    # Safe to mutate; does not consume the buffer. Use `each_event` to drain
+    # without copying.
+    def events(event_class_or_key)
+      arr = @events&.[](event_class_or_key)
+      arr ? arr.dup : []
+    end
+
     private
+
+    # Pretty-print a single archetype's signature as "[A, B, C]" with each
+    # class/symbol rendered as `ClassName` or `:sym`.
+    def archetype_signature(archetype)
+      '[' + Array.each(archetype.component_classes).map { |k|
+        k.is_a?(Class) ? k.name : k.inspect
+      }.join(', ') + ']'
+    end
 
     def remove_child_from_parent(parent_id, child_id)
       return false unless parent_id

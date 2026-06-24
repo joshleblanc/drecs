@@ -17,3 +17,16 @@ font.ttf
 
 errors/
 .claude
+
+# drecs build artifacts. Each sample's build.bat drops a .dll/.so/.dylib
+# into native/<platform>/ so DR.dlopen finds it; those are regenerated
+# from source and shouldn't be committed.
+/native/
+**/native/
+
+# Debug / perf artifacts produced while developing the samples.
+*.flag
+*_log.txt
+*_perf.txt
+native_bench_results.txt
+.mavis

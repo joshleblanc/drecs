@@ -259,13 +259,15 @@ def apply_events(args, world)
 
   if !bullets_to_destroy.empty?
     ids = bullets_to_destroy.keys
-    world.commands { |cmd| cmd.destroy(*ids) }
+    # Apply immediately (not `commands`): update_render_cache runs after this
+    # function and needs the entities to already be gone.
+    world.commands! { |cmd| cmd.destroy(*ids) }
     args.state.to_remove_from_cache.concat(ids)
   end
 
   if !enemies_to_destroy.empty?
     ids = enemies_to_destroy.keys
-    world.commands { |cmd| cmd.destroy(*ids) }
+    world.commands! { |cmd| cmd.destroy(*ids) }
     args.state.to_remove_from_cache.concat(ids)
     args.state.score += ids.length
     spawn_enemies(world, ids.length)

@@ -128,8 +128,7 @@ def test_signature_is_frozen args, assert
   world = Drecs::World.new
   entity = world.spawn({ position: { x: 1, y: 2 } })
 
-  loc = world.instance_variable_get(:@entity_locations)[entity]
-  archetype = loc[:archetype]
+  archetype = world.instance_variable_get(:@entity_archetypes)[entity]
 
   assert.equal! archetype.component_classes.frozen?, true
 end

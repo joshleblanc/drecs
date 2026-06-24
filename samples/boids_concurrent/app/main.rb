@@ -1,6 +1,6 @@
 # Resources for global game state
 GameTime = Struct.new(:elapsed, :delta)
-GameConfig = Struct.new(:boids_count, :show_debug, :mouse_enabled)
+GameConfig = Struct.new(:boids_count, :show_debug, :mouse_enabled, :thread_count)
 
 RESOLUTION = {
   w: 1280,
@@ -8,6 +8,7 @@ RESOLUTION = {
 }
 
 BOIDS_COUNT = 5000
+DEFAULT_THREADS = 4
 
 SEPARATION_WEIGHT = 20
 ALIGNMENT_WEIGHT = 1.0
@@ -77,9 +78,9 @@ end
 # can coexist on the same entity archetype.
 Position = Class.new(Vector)
 Velocity = Class.new(Vector)
-Size = Class.new(Vector)
-Color = Struct.new(:r, :g, :b, :a)
-Grid = Struct.new(:cells)
+Size     = Class.new(Vector)
+Color    = Struct.new(:r, :g, :b, :a)
+Grid     = Struct.new(:cells)
 
 BOID_BUNDLE = Drecs.bundle(Position, Size, Color, Velocity)
 
@@ -127,12 +128,22 @@ def neighbours(index, grid, positions, &blk)
   c
 end
 
+
 def boot(args)
+  # Load the C extension for parallel processing
+  begin
+    DR.dlopen "drecs_parallel"
+    Drecs::Parallel.init
+    puts "Drecs: Parallel extension loaded (C-ext)"
+  rescue StandardError
+    puts "Drecs: Parallel extension not available (fallback)"
+  end
+
   args.state.entities = Drecs::World.new
 
   # Insert resources
   args.state.entities.insert_resource(GameTime.new(0.0, 0.016))
-  args.state.entities.insert_resource(GameConfig.new(BOIDS_COUNT, true, true))
+  args.state.entities.insert_resource(GameConfig.new(BOIDS_COUNT, true, true, DEFAULT_THREADS))
 
   args.state.hook_color_added = 0
   args.state.hook_color_removed = 0
@@ -165,6 +176,17 @@ def tick(args)
   time = args.state.entities.resource(GameTime)
   config = args.state.entities.resource(GameConfig)
 
+  # Handle thread count adjustment
+  if args.inputs.keyboard.key_down.one
+    config.thread_count = 1
+  elsif args.inputs.keyboard.key_down.two
+    config.thread_count = 2
+  elsif args.inputs.keyboard.key_down.three
+    config.thread_count = 4
+  elsif args.inputs.keyboard.key_down.four
+    config.thread_count = 8
+  end
+
   # Update time resource
   time.elapsed += time.delta
 
@@ -173,8 +195,10 @@ def tick(args)
 
   solids = []
 
-  # Work on boids using the new ECS query API. The arrays are aligned by index.
-  args.state.entities.query(Position, Velocity, Size, Color) do |entity_ids, positions, velocities, sizes, colors|
+  # Use concurrent_query for parallel processing via C extension
+  # When C extension is available, uses SDL3 threads for parallel iteration
+  # Falls back to normal query when C extension is not loaded
+  args.state.entities.concurrent_query(Position, Velocity, Size, Color, threads: config.thread_count) do |entity_ids, positions, velocities, sizes, colors|
     # Populate spatial grid with boid indices
     Array.each_with_index(positions) do |pos, i|
       grid_x = (pos.x.to_i * GRID_POS_FACTOR).clamp(0, MAX_GRID_COLS)
@@ -279,7 +303,7 @@ def tick(args)
   end
 
   if args.inputs.keyboard.key_down.space
-    args.state.entities.query(Position, Velocity, Size, Color) do |entity_ids, *rest|
+    args.state.entities.concurrent_query(Position, Velocity, Size, Color, threads: config.thread_count) do |entity_ids, *rest|
       id = entity_ids.sample
       if id
         args.state.entities.remove_component(id, Color)
@@ -295,10 +319,11 @@ def tick(args)
     args.outputs.debug << "#{args.gtk.current_framerate_calc} fps simulation"
     args.outputs.debug << "#{args.gtk.current_framerate_render} fps render"
     args.outputs.debug << "boids: #{config.boids_count}"
+    args.outputs.debug << "threads: #{config.thread_count}"
+    args.outputs.debug << "concurrent: #{Drecs::Parallel.available? ? 'C-ext' : 'fallback'}"
     args.outputs.debug << "time: #{time.elapsed.round(2)}s"
     args.outputs.debug << "hooks: color +#{args.state.hook_color_added}/-#{args.state.hook_color_removed}"
   end
 
   args.state.entities.tick(args)
 end
-

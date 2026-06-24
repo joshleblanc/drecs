@@ -16,7 +16,9 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 - **Entity relationships** - `Parent` / `Children` components with helper APIs
 - **Automatic archetype cleanup** - Empty archetypes are removed to prevent memory growth
 - **Flexible component operations** - Add, remove, or batch-update components with archetype migration
-- **Debug/inspection tools** - Built-in methods to understand world state and performance
+- **Native systems (SDL3-threaded)** - Real parallel execution via `register_native_system` / `run_native_system` and a C extension
+- **Debug/inspection tools** - Built-in methods to understand world state and performance, plus an in-game debug overlay
+- **Ergonomic helpers** - `Drecs.tag`, `Drecs.component`, `find_entity`, `cached_query`, `event?`/`event_count`, `fetch_resource`, `snapshot`/`restore`, `validate!`, `dump`, and more
 
 ## Installation
 
@@ -65,15 +67,22 @@ Components can be simple Ruby Structs or plain hashes for rapid prototyping:
 **Struct Components (recommended for production):**
 
 ```ruby
-Position = Struct.new(:x, :y)
-Velocity = Struct.new(:dx, :dy)
-Health = Struct.new(:current, :max)
-Tag = Struct.new(:name)
+Position = Drecs.component(:x, :y)
+Velocity = Drecs.component(:dx, :dy)
+Health   = Drecs.component(:current, :max)
+Tag      = Drecs.component(:name)
 
-# Tag components (no data)
-Player = Struct.new("Player")
-Enemy = Struct.new("Enemy")
+# Tag components (zero-field markers) — use Drecs.tag
+Player = Drecs.tag(:player)
+Enemy  = Drecs.tag(:enemy)
 ```
+
+`Drecs.component(*members)` is sugar for `Struct.new(*members)`. `Drecs.tag(name)`
+returns a `Struct` with one `:tag_name` field, pre-populated with the symbol you
+passed in. It introspects cleanly (`Player.tag_name == :player`) and avoids the
+`Struct.new("Player")` weirdness.
+
+You can still use plain `Struct.new` directly — both forms work identically.
 
 **Hash Components (great for MVPs and prototyping):**
 
@@ -330,6 +339,50 @@ end
 
 If you use `world.tick(args)` to run systems, it automatically calls `advance_change_tick!` once per tick.
 
+#### Native Systems (DR7, SDL3-threaded execution)
+
+> **Note:** `concurrent_query` is **deprecated** as of this version. The
+> threading promise was theatrical under mruby (which is single-threaded), so
+> `concurrent_query` now forwards to plain `query` and emits a deprecation
+> warning. For real parallel execution, use **native systems** — drecs manages
+> the SDL3 thread fan-out from Ruby while your kernel runs in C on `double*`
+> buffers.
+
+```ruby
+DR.dlopen "drecs_parallel"
+DR.dlopen "my_systems"
+Drecs::Parallel.load
+
+world.register_native_system(
+  :integrate,
+  module_name: "MySystems",
+  kernel:      :integrate_motion,
+  reads:       [[Position, :x], [Position, :y], [Velocity, :x], [Velocity, :y]],
+  writes:      [[Position, :x], [Position, :y]],
+  threads:     4,
+)
+
+# Per frame:
+world.run_native_system(:integrate, dt: 1.0 / 60.0)
+```
+
+**How it works:**
+- The Ruby side extracts component data into SoA `double[]` arrays.
+- Your C kernel runs across N SDL3 worker threads on plain C memory.
+- The runtime writes results back into your component structs and bumps the
+  change tick.
+- mruby itself stays single-threaded; only the kernel body is parallel.
+
+**Requirements:**
+- DragonRuby 7 (uses SDL3 thread API)
+- Compiled `drecs_parallel` runtime (`gcc -shared -O2 ... drecs_parallel.c`)
+- Your own DragonRuby C extension with `DRECS_KERNEL(...)` macros
+
+See `samples/native_systems/` for a working example, and `ext/README.md` for
+the kernel authoring guide.
+
+#### Events
+
 #### Events
 
 Events provide a lightweight way for systems to communicate without direct coupling.
@@ -360,20 +413,29 @@ world.clear_events!(DamageEvent)
 By default, events are cleared when the world advances its change tick.
 This means that if you call `world.tick(args)` (or call `advance_change_tick!` once per frame), events are naturally scoped to a single tick.
 
-#### Deferring World Mutations During Iteration
+#### Deferring World Mutations
 
-When iterating entities, structural changes (destroy/spawn/add/remove) should be deferred. The recommended API is `commands`, which batches mutations safely and applies them after iteration.
+Structural changes (destroy/spawn/add/remove) should be batched. drecs exposes two
+flavors so the choice between defer-and-flush and apply-now is explicit:
 
 ```ruby
-# Safely destroy entities found during iteration
-world.each_entity(Health, Enemy) do |entity_id, health|
-  if health.current <= 0
-    world.commands { |cmd| cmd.destroy(entity_id) }
-  end
-end
+# Inside iteration, or whenever you want "buffer and flush" semantics:
+world.commands { |cmd| cmd.destroy(entity_id) }
+
+# When you need the change to be visible RIGHT NOW (e.g. mid-frame, between
+# iteration and the next frame, or anywhere the deferred semantics don't fit):
+world.commands! { |cmd| cmd.spawn(Position.new(0, 0)) }
 ```
 
-Outside of iteration, `commands` applies immediately. `defer`/`flush_defer!` are still available for low-level control, but `commands` is preferred.
+`commands` always defers — the buffered mutations run at the next flush point.
+`tick(args)` calls `flush_defer!` at the end of every frame, so the common case
+"queue inside a system, run before the next frame" works automatically. Inside
+iteration, the flush happens when the iterator ends.
+
+`commands!` always applies immediately. Use it when you specifically want the
+mutation to be visible to subsequent calls in the same code path.
+
+`defer { ... }` and `flush_defer!` are still available for low-level control.
 
 To find just the first matching entity, use `first_entity`:
 
@@ -390,6 +452,20 @@ world.first_entity(Player, Health) do |entity_id, player, health|
   puts "Player health: #{health.current}/#{health.max}"
 end
 ```
+
+If you only need the entity_id (e.g. for a "is there one?" check or to feed into
+another operation), use `find_entity`:
+
+```ruby
+# First matching entity id, or nil
+id = world.find_entity(Position, Velocity)
+
+# Predicate form: return the first entity the block returns truthy for
+id = world.find_entity(Position, Velocity) { |_id, pos, _vel| pos.x > 500 }
+```
+
+`find_entity` is the right choice when the components themselves don't matter;
+`first_entity` is the right choice when you need them.
 
 ### Single Entity Component Access
 
@@ -450,6 +526,76 @@ puts "Archetypes: #{world.archetype_count}"
 world.archetype_stats.each do |stat|
   puts "Archetype [#{stat[:components].join(', ')}]: #{stat[:entity_count]} entities"
 end
+
+# List every component class/symbol that's currently in use
+puts "Components: #{world.component_classes.inspect}"
+
+# Dump the whole world as a multi-line String — great for the DragonRuby
+# console when the in-game debug overlay isn't available.
+puts world.dump
+
+# Development-time integrity check. Walks every archetype and verifies that
+# stores, rows, and the entity tables are mutually consistent. Raises
+# `Drecs::IntegrityError` if anything is off. Cheap to call.
+world.validate!
+```
+
+### Snapshot, Restore, and Cached Queries
+
+```ruby
+# Capture the entire world state (entities + components + resources + events)
+# into a Hash. The struct components are deep-copied via Marshal so mutating
+# the snapshot doesn't affect the live world.
+snap = world.snapshot
+
+# ...later, in another world or another session:
+fresh = Drecs::World.new
+fresh.restore(snap)
+
+# If the same query runs every frame, build a cached Query once instead of
+# re-normalizing the signature every call:
+q = world.cached_query(Position, Velocity)
+q.each { |ids, positions, velocities| ... }
+```
+
+### Event Helpers
+
+```ruby
+# Check / count / snapshot buffered events without iterating
+world.event?(:hit)             # true/false
+world.event_count(:hit)        # Integer
+world.events(:hit)             # Array snapshot (safe to mutate)
+```
+
+### Resource Helpers
+
+```ruby
+# Insert and read like before
+world.insert_resource(:score, 0)
+world.resource(:score)         # nil if missing
+
+# Or use the fetching form, which raises or falls back to a default
+world.fetch_resource(:score)               # raises KeyError if missing
+world.fetch_resource(:score) { 0 }         # returns 0 if missing
+
+# Predicate
+world.has_resource?(:score)     # true/false
+```
+
+### World Construction Presets
+
+```ruby
+# Development (default) — debug overlay on, no duplicate-component validation
+world = Drecs::World.new
+
+# Production — debug overlay off, duplicate-component validation on
+world = Drecs::World.new(mode: :production)
+
+# Explicit kwargs always win over mode:
+world = Drecs::World.new(mode: :production, debug_overlay: true)
+
+# Validation alone:
+world = Drecs::World.new(validate_components: true)
 ```
 
 ### Resources
@@ -547,10 +693,12 @@ If you don't use named scheduled systems, `world.tick(args)` will continue to ru
 ## Performance Tips
 
 1. **Use `query` for batch operations** - When processing many entities, `query` is faster than `each_entity` because it works with raw arrays
-2. **Batch component changes** - Use `set_components` instead of multiple `add_component` calls to avoid repeated archetype migrations
-3. **Batch entity destruction** - Collect entity IDs and call `destroy(*ids)` once instead of destroying individually
-4. **Component reuse** - Modify component values in-place when possible instead of creating new component instances
-5. **Empty archetype cleanup** - The library automatically cleans up empty archetypes, preventing memory growth
+2. **Use `cached_query` for hot-path queries** - If the same `query` runs every frame, build a `cached_query` once and reuse it; signature normalization runs once instead of every call
+3. **Batch component changes** - Use `set_components` instead of multiple `add_component` calls to avoid repeated archetype migrations
+4. **Batch entity destruction** - Collect entity IDs and call `destroy(*ids)` once instead of destroying individually
+5. **Component reuse** - Modify component values in-place when possible instead of creating new component instances
+6. **Empty archetype cleanup** - The library automatically cleans up empty archetypes, preventing memory growth
+7. **For real parallelism** - Use `register_native_system` / `run_native_system` (requires a compiled C extension); see the "Native Systems" section
 
 ## Multi-File Projects
 
@@ -615,6 +763,82 @@ dragonruby . --sample ants
 dragonruby . --sample trivial
 dragonruby . --sample avoider
 ```
+
+## Known Pitfalls
+
+A few things that bite new drecs users. These are documented up front so you
+don't lose an afternoon to them.
+
+### Struct subclasses break DragonRuby hot reload
+
+```ruby
+class PlayerGrid < Struct.new(:grid_x, :grid_y)   # ← THIS BREAKS HOT RELOAD
+  ...
+end
+```
+
+If you define a component as a `Struct` *subclass* (with `class ... < Struct.new(...)`),
+DragonRuby's hot reload will throw `superclass mismatch for class PlayerGrid`
+on the next reload and you'll need to `GTK.reboot` (Shift+Ctrl+R / Cmd+R).
+This is a DragonRuby / mruby constraint, not a drecs bug.
+
+**Fix:** use the bare `Struct.new` assignment form, or `Drecs.component`:
+
+```ruby
+PlayerGrid = Struct.new(:grid_x, :grid_y)
+# or
+PlayerGrid = Drecs.component(:grid_x, :grid_y)
+```
+
+If you need methods on your component, you can monkey-patch the Struct or use
+the `class << self` form, but avoid `class Foo < Struct.new(...)`.
+
+### Two yield shapes for `query`
+
+The block form yields SoA arrays (fast path). The enumerator form (no block)
+yields per-entity tuples (ergonomic path). They look similar but are very
+different:
+
+```ruby
+# Block form — yields arrays. ALWAYS do this in hot paths.
+world.query(Position, Velocity) do |ids, positions, velocities|
+  # ids[0..n], positions[0..n], velocities[0..n] — index-aligned
+end
+
+# Enumerator form — yields per-entity. Use for `first`, `each`, `to_a`.
+id, pos, vel = world.query(Position, Velocity).first
+world.query(Position, Velocity).each { |id, pos, vel| ... }
+```
+
+Don't mix them — if you reflexively write `do |id, pos, vel|` against the
+block form, you'll silently get `[id, [positions], [velocities]]` and crash
+two lines later.
+
+### Struct components and hash components are two parallel worlds
+
+You can use either, but they don't fully interoperate:
+
+- `on_added(Position)` works on the struct path; `on_added(:position)` does
+  not (hooks are keyed by Class only).
+- `world.spawn(Position.new(...))` and `world.spawn({ position: {...} })`
+  create entities in different internal layouts, though queries against
+  either key return the same data.
+- Code review can't tell from a call site which kind is in use.
+
+Pick one for a project and stick with it. Mixing is supported but you'll find
+out the hard way that half your lifecycle hooks fired and half didn't.
+
+### `set_components` on archetype migration bumps everything
+
+When `set_components` causes an entity to migrate to a new archetype (e.g. you
+added a new component type), **every component on the entity** has its
+`change_tick` bumped — not just the ones you touched. The reasoning: the
+archetype move itself is a visible change, and downstream `changed:` filters
+should see it.
+
+If you only want "touched" semantics, stay on the same archetype (replace
+existing component values, don't add new ones) or use `add_component` /
+`remove_component` directly.
 
 ## Contributing
 
