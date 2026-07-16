@@ -1,5 +1,8 @@
-class Lifetime < Struct.new(:ticks)
+class Lifetime
+  include Drecs::Component
+  component :ticks
+
   def initialize(ticks = 120)
-    super(ticks)
+    @ticks = ticks
   end
 end

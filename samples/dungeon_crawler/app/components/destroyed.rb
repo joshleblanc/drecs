@@ -1,6 +1,9 @@
 # Destroyed component - marks entity for removal
-class Destroyed < Struct.new(:destroyed_at)
+class Destroyed
+  include Drecs::Component
+  component :destroyed_at
+
   def initialize(frame = 0)
-    super(frame)
+    @destroyed_at = frame
   end
 end

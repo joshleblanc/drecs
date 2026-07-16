@@ -16,47 +16,63 @@ VelocityMig2 = Struct.new(:dx, :dy)
 # Drecs.tag
 # ---------------------------------------------------------------------------
 
-def test_drecs_tag_creates_named_struct(args, assert)
+def test_drecs_tag_exposes_tag_name_on_class_and_instance(args, assert)
   player_klass = Drecs.tag(:player)
-  assert.equal! player_klass.name, "Struct::Player"
+  assert.equal! player_klass.tag_name, :player
   assert.equal! player_klass.new.tag_name, :player
 end
 
-def test_drecs_tag_capitalizes_symbol_names(args, assert)
-  bullet_klass = Drecs.tag(:bullet)
-  assert.equal! bullet_klass.name, "Struct::Bullet"
+def test_drecs_tag_is_not_a_struct_and_does_not_collide(args, assert)
+  # Tags must not define global Struct constants — two tags with the same
+  # name are distinct classes (distinct archetype signatures) and creating
+  # the second must not raise or emit a redefinition warning.
+  k1 = Drecs.tag(:bullet)
+  k2 = Drecs.tag(:bullet)
+  assert.equal! k1.ancestors.include?(Struct), false
+  assert.equal! k1 == k2, false
+  assert.equal! k1.tag_name, k2.tag_name
+end
+
+def test_drecs_tag_carries_zero_fields(args, assert)
+  tag_klass = Drecs.tag(:marker)
+  assert.equal! tag_klass.new.members, []
+  assert.equal! tag_klass.new.values, []
 end
 
 def test_drecs_tag_anonymous_when_no_name(args, assert)
   anon = Drecs.tag
   assert.equal! anon.name.nil?, true
+  assert.equal! anon.tag_name.nil?, true
+end
+
+def test_drecs_tag_works_as_component(args, assert)
+  w = Drecs::World.new
+  tag_klass = Drecs.tag(:enemy)
+  id = w.spawn(PositionTagTest.new(1, 2), tag_klass.new)
+  assert.equal! w.has_component?(id, tag_klass), true
+  found = []
+  w.each_entity(PositionTagTest, with: tag_klass) { |eid, _pos| found << eid }
+  assert.equal! found, [id]
 end
 
 # ---------------------------------------------------------------------------
-# World.new mode:
+# World.new validation kwarg:
 # ---------------------------------------------------------------------------
 
-def test_world_new_mode_production_disables_overlay_enables_validation(args, assert)
-  w = Drecs::World.new(mode: :production)
-  assert.equal! w.instance_variable_get(:@validate_components), true
-  assert.equal! w.instance_variable_get(:@debug_overlay).nil?, true
-end
-
-def test_world_new_mode_dev_keeps_overlay_disables_validation(args, assert)
-  w = Drecs::World.new(mode: :dev)
+def test_world_new_validation_defaults_to_off(args, assert)
+  w = Drecs::World.new
   assert.equal! w.instance_variable_get(:@validate_components), false
-  assert.equal! w.instance_variable_get(:@debug_overlay).nil?, false
 end
 
-def test_world_new_explicit_kwargs_override_mode(args, assert)
-  w = Drecs::World.new(mode: :production, debug_overlay: true)
-  assert.equal! w.instance_variable_get(:@debug_overlay).nil?, false
+def test_world_new_validation_kwarg_turns_it_on(args, assert)
+  w = Drecs::World.new(validate_components: true)
+  assert.equal! w.instance_variable_get(:@validate_components), true
 end
 
-def test_world_new_invalid_mode_raises(args, assert)
+def test_world_new_invalid_kwarg_raises(args, assert)
   raised = false
   begin
-    Drecs::World.new(mode: :bogus)
+    Drecs::World.new(never_a_valid_kwarg: 1)
   rescue ArgumentError
     raised = true
   end

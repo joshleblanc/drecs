@@ -28,7 +28,13 @@ FOOD_PIECES_PER_SOURCE = 50_000
 GRID_COLS = (RESOLUTION.w / PHEROMONE_GRID_SIZE).ceil
 GRID_ROWS = (RESOLUTION.h / PHEROMONE_GRID_SIZE).ceil
 
-class Vector < Struct.new(:x, :y)
+# Drecs::Component mixin instead of `class Vector < Struct.new(...)`:
+# subclassing an anonymous Struct breaks hot-reload, and the mixin stores
+# fields as @-ivars (uniform with the other samples / native-ready).
+class Vector
+  include Drecs::Component
+  component :x, :y
+
   def clear!
     self.x = 0.0
     self.y = 0.0
@@ -69,11 +75,11 @@ end
 # Component classes
 Position = Class.new(Vector)
 Velocity = Class.new(Vector)
-Angle = Struct.new(:value)
-AntState = Struct.new(:carrying_food, :target_food_id)
-NestComponent = Struct.new(:food_stored)
-FoodComponent = Struct.new(:amount)
-PheromoneGrid = Struct.new(:to_food, :to_home)
+Angle = Drecs.component(:value)
+AntState = Drecs.component(:carrying_food, :target_food_id)
+NestComponent = Drecs.component(:food_stored)
+FoodComponent = Drecs.component(:amount)
+PheromoneGrid = Drecs.component(:to_food, :to_home)
 
 def boot(args)
   args.state.entities = Drecs::World.new
@@ -299,7 +305,7 @@ def tick(args)
   }
 
   # Render food sources
-  args.state.entities.query(Position, FoodComponent) do |entity_ids, positions, food_comps|
+  args.state.entities.each_chunk(Position, FoodComponent) do |entity_ids, positions, food_comps|
     Array.each_with_index(positions) do |food_pos, i|
       args.outputs.solids << {
         x: food_pos.x - FOOD_SIZE,
@@ -314,7 +320,7 @@ def tick(args)
   end
 
   # Render ants
-  args.state.entities.query(Position, AntState) do |entity_ids, positions, states|
+  args.state.entities.each_chunk(Position, AntState) do |entity_ids, positions, states|
     Array.each_with_index(positions) do |pos, i|
       state = states[i]
 

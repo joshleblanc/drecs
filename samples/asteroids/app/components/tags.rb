@@ -1,3 +1,3 @@
-Player = Struct.new(:thrust_power, :rotation_speed)
-Asteroid = Struct.new(:size)
-Bullet = Struct.new(:lifetime)
+Player = Drecs.component(:thrust_power, :rotation_speed)
+Asteroid = Drecs.component(:size)
+Bullet = Drecs.component(:lifetime)

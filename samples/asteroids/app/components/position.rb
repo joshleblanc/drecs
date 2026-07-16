@@ -1,1 +1,1 @@
-Position = Struct.new(:x, :y)
+Position = Drecs.component(:x, :y)

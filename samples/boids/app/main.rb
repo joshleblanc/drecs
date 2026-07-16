@@ -28,7 +28,13 @@ GRID_ROWS = (RESOLUTION.h / GRID_CELL_SIZE).ceil
 MAX_GRID_COLS = GRID_COLS - 1
 MAX_GRID_ROWS = GRID_ROWS - 1
 
-class Vector < Struct.new(:x, :y)
+# Drecs::Component mixin instead of `class Vector < Struct.new(...)`:
+# subclassing an anonymous Struct breaks hot-reload, and the mixin stores
+# fields as @-ivars (uniform with the other samples / native-ready).
+class Vector
+  include Drecs::Component
+  component :x, :y
+
   def clear!
     self.x = 0.0
     self.y = 0.0
@@ -78,8 +84,8 @@ end
 Position = Class.new(Vector)
 Velocity = Class.new(Vector)
 Size = Class.new(Vector)
-Color = Struct.new(:r, :g, :b, :a)
-Grid = Struct.new(:cells)
+Color = Drecs.component(:r, :g, :b, :a)
+Grid = Drecs.component(:cells)
 
 BOID_BUNDLE = Drecs.bundle(Position, Size, Color, Velocity)
 
@@ -174,7 +180,7 @@ def tick(args)
   solids = []
 
   # Work on boids using the new ECS query API. The arrays are aligned by index.
-  args.state.entities.query(Position, Velocity, Size, Color) do |entity_ids, positions, velocities, sizes, colors|
+  args.state.entities.each_chunk(Position, Velocity, Size, Color) do |entity_ids, positions, velocities, sizes, colors|
     # Populate spatial grid with boid indices
     Array.each_with_index(positions) do |pos, i|
       grid_x = (pos.x.to_i * GRID_POS_FACTOR).clamp(0, MAX_GRID_COLS)
@@ -273,13 +279,14 @@ def tick(args)
         r: color.r,
         g: color.g,
         b: color.b,
-        a: color.a
+        a: color.a,
+        path: :solid
       }
     end
   end
 
   if args.inputs.keyboard.key_down.space
-    args.state.entities.query(Position, Velocity, Size, Color) do |entity_ids, *rest|
+    args.state.entities.each_chunk(Position, Velocity, Size, Color) do |entity_ids, *rest|
       id = entity_ids.sample
       if id
         args.state.entities.remove_component(id, Color)
@@ -288,7 +295,7 @@ def tick(args)
     end
   end
 
-  args.outputs.solids << solids
+  args.outputs.sprites << solids
 
   if config.show_debug
     args.outputs.debug << "#{args.gtk.current_framerate} fps"

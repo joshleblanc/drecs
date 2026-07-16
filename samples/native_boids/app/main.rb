@@ -13,8 +13,8 @@
 # Controls (live):
 #   + / =   add 1000 boids
 #   -       remove 1000 boids (if you've spawned enough)
-#   1 / 2 / 3 / 4   set :boids_step thread count to 1 / 2 / 4 / 8
-#   R       toggle Ruby fallback vs native path
+#   1 / 2 / 3 / 4 / 5   set :boids_step thread count to 1 / 2 / 3 / 4 / 8
+#   R       toggle Ruby fallback vs native path (simulation kernel)
 #
 # The simulation constants (NEIGHBOUR_RANGE, weights, etc.) MUST match
 # the values hardcoded in app/boids_kernel.c. If you change them here,
@@ -22,7 +22,7 @@
 
 RESOLUTION = { w: 1280, h: 720 }
 
-BOIDS_COUNT     = 5_000    # match the original boids baseline; press + to scale up
+BOIDS_COUNT     = 5_000     # default; press + to scale up. Tested up to 200k.
 DEFAULT_THREADS = 2        # safe default — see "thread count sweet spot" in README
 
 SEPARATION_WEIGHT = 20
@@ -32,8 +32,10 @@ NEIGHBOUR_RANGE   = 10
 MIN_VELOCITY      = 2
 MAX_VELOCITY      = 5
 
-# ECS component classes. Using Drecs.component(:x, :y) gives us Struct
-# subclasses with float members.
+# ECS component classes. Using Drecs.component(:x, :y) gives us a class
+# whose fields live as @-ivars, so the C-side mrb_iv_get path used by
+# run_kernel_native reads them directly (~10ns/call vs ~300ns for the
+# .send(:x) Ruby path).
 Position = Drecs.component(:x, :y)
 Velocity = Drecs.component(:x, :y)
 Size     = Drecs.component(:w, :h)
@@ -85,12 +87,13 @@ def remove_last_boid(world)
   ids = world.ids(Position, Velocity, Size, Color)
   return false if ids.empty?
   victim = ids.last
-  # Remove one component to detach it from the Position+Velocity archetype;
-  # the simplest correct approach is to detach from each component class.
+  # Detach the entity from every boid component class, then destroy the
+  # now-empty entity so it doesn't leak in entity_count.
   world.remove_component(victim, Position)
   world.remove_component(victim, Velocity)
   world.remove_component(victim, Size)
   world.remove_component(victim, Color)
+  world.destroy(victim)
   true
 end
 
@@ -154,6 +157,7 @@ def boot(args)
     world.insert_resource(GameTime.new(0.0, 0.016))
     world.insert_resource(GameConfig.new(BOIDS_COUNT, DEFAULT_THREADS, true))
     args.state[:world] = world
+
     flog "[native_boids] spawned #{BOIDS_COUNT} boids, native systems registered"
   else
     flog "[native_boids] native unavailable, will use Ruby fallback if R toggled"
@@ -215,10 +219,10 @@ def tick(args)
     config.threads = 8
   end
 
-  # --- Input: toggle mode ---
+  # --- Input: toggle simulation mode (native kernel vs Ruby fallback) ---
   if args.inputs.keyboard.key_down.r
     config.use_native = !config.use_native
-    flog "[native_boids] mode -> #{config.use_native ? 'native' : 'ruby'}"
+    flog "[native_boids] sim mode -> #{config.use_native ? 'native' : 'ruby'}"
   end
 
   # --- Simulation ---
@@ -230,22 +234,24 @@ def tick(args)
   end
 
   # --- Render ---
+  # Default render path: walk the archetype's struct stores in one batched
+  # query, push one solid per boid. Slow above ~5k but portable, no C
+  # build step required. For 40k+, write your own native kernel using
+  # register_native_system and push to args.outputs there.
   solids = []
-  world.query(Position, Size, Color) do |_entity_ids, positions, sizes, colors|
-    n = positions.length
-    i = 0
-    while i < n
-      pos = positions[i]
-      s   = sizes[i]
-      c   = colors[i]
+  world.each_chunk(Position, Size, Color) do |_entity_ids, positions, sizes, colors|
+    Array.each_with_index(positions) do |_, i|
       solids << {
-        x: pos.x, y: pos.y, w: s.w, h: s.h,
-        r: c.r, g: c.g, b: c.b, a: c.a
+        x: positions[i].x, y: positions[i].y,
+        w: sizes[i].w,    h: sizes[i].h,
+        r: colors[i].r,   g: colors[i].g,
+        b: colors[i].b,   a: colors[i].a,
+        path: :solid
       }
-      i += 1
     end
   end
-  args.outputs.solids << solids
+
+  args.outputs.sprites << solids 
 
   # --- Debug overlay ---
   # Note: `current_framerate` (the number you actually see) is the
@@ -259,9 +265,9 @@ def tick(args)
   args.outputs.debug << "  sim:    #{calc_fps.round(1)}"
   args.outputs.debug << "  render: #{render_fps.round(1)}"
   args.outputs.debug << "boids:  #{config.boids_count}"
-  args.outputs.debug << "mode:   #{config.use_native && args.state[:parallel_ok] ? 'native' : 'ruby'}"
+  args.outputs.debug << "sim mode:  #{config.use_native && args.state[:parallel_ok] ? 'native' : 'ruby'}"
   args.outputs.debug << "step threads: #{config.threads}"
-  args.outputs.debug << "controls: +/- boids  1..5 threads  R ruby/native"
+  args.outputs.debug << "controls: +/- boids  1..5 threads  R sim"
   if config.threads >= 5
     args.outputs.debug << "  note: threads>~cores only helps at heavy workloads"
   end
@@ -272,6 +278,7 @@ def tick(args)
   if args.state[:tick_count] == 180 && args.state[:parallel_ok]
     flog "[native_boids] t=3s  fps=#{args.gtk.current_framerate.round(1)} " \
          "calc=#{args.gtk.current_framerate_calc.round(1)} " \
+         "render=#{args.gtk.current_framerate_render.round(1)} " \
          "boids=#{config.boids_count} threads=#{config.threads} mode=native"
   end
 end
@@ -289,28 +296,22 @@ NEIGHBOUR_RANGE_SQ_R = NEIGHBOUR_RANGE * NEIGHBOUR_RANGE
 MAX_NEIGHBOURS_R     = 2
 
 def ruby_boids_step(world, dt, _expected_count)
-  # Query both Position and Velocity in one call so the iteration aligns
-  # by row index. drecs's query yields (entity_ids, *stores) per matching
-  # archetype; we ask for both classes together so positions[i] and
-  # velocities[i] line up.
-  #
-  # NOTE: the previous version made two separate queries and tried to
-  # destructure a single-component query as two args, leaving the second
-  # as nil. nil[i] in the inner loop blew up the tick. This version
-  # queries both at once and reads `.x` / `.y` off the resulting structs.
-  world.query(Position, Velocity) do |_entity_ids, positions, velocities|
+  # Iterate Position and Velocity together so the rows align by index.
+  # each_chunk yields (entity_ids, *stores) per matching archetype; asking
+  # for both classes at once means positions[i] and velocities[i] line up.
+  world.each_chunk(Position, Velocity) do |_entity_ids, positions, velocities|
     next if positions.empty?
 
     # Build spatial grid of boid indices keyed by cell.
     grid = Array.new(128) { Array.new(72) { [] } }
-    positions.each_with_index do |pos, i|
+    Array.each_with_index(positions) do |pos, i|
       cx = (pos.x.to_i / 10).clamp(0, 127)
       cy = (pos.y.to_i / 10).clamp(0, 71)
       grid[cx][cy] << i
     end
 
     scale = dt * 100.0
-    positions.each_with_index do |pos, i|
+    Array.each_with_index(positions) do |pos, i|
       vel = velocities[i]
       cx  = (pos.x.to_i / 10).clamp(0, 127)
       cy  = (pos.y.to_i / 10).clamp(0, 71)
@@ -326,7 +327,7 @@ def ruby_boids_step(world, dt, _expected_count)
           next if ncx < 0 || ncx >= 128 || ncy < 0 || ncy >= 72
           break if n >= MAX_NEIGHBOURS_R
           cell = grid[ncx][ncy]
-          cell.each do |j|
+          Array.each(cell) do |j|
             next if j == i
             other_pos = positions[j]
             other_vel = velocities[j]

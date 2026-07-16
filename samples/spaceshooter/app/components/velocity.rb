@@ -1,5 +1,9 @@
-class Velocity < Struct.new(:x, :y)
+class Velocity
+  include Drecs::Component
+  component :x, :y
+
   def initialize(x = 0, y = 0)
-    super(x, y)
+    @x = x
+    @y = y
   end
 end

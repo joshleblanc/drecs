@@ -7,10 +7,12 @@ def test_query_without_filter_struct_components(args, assert)
     Object.const_set(:DrecsQFPosition, Struct.new(:x, :y))
   end
 
+  # mruby's Struct.new requires at least one member; Drecs.tag is the
+  # supported way to build a zero-field marker component.
   frozen_klass = if Object.const_defined?(:DrecsQFFrozen)
     Object.const_get(:DrecsQFFrozen)
   else
-    Object.const_set(:DrecsQFFrozen, Struct.new)
+    Object.const_set(:DrecsQFFrozen, Drecs.tag(:frozen))
   end
 
   world = Drecs::World.new
@@ -19,7 +21,7 @@ def test_query_without_filter_struct_components(args, assert)
   b = world.spawn(position_klass.new(3, 4), frozen_klass.new)
 
   ids = []
-  world.query(position_klass, without: frozen_klass) do |entity_ids, _positions|
+  world.each_chunk(position_klass, without: frozen_klass) do |entity_ids, _positions|
     ids.concat(entity_ids)
   end
 
@@ -47,13 +49,13 @@ def test_query_any_filter_struct_components(args, assert)
   player_klass = if Object.const_defined?(:DrecsQFPlayer)
     Object.const_get(:DrecsQFPlayer)
   else
-    Object.const_set(:DrecsQFPlayer, Struct.new)
+    Object.const_set(:DrecsQFPlayer, Drecs.tag(:player))
   end
 
   enemy_klass = if Object.const_defined?(:DrecsQFEnemy)
     Object.const_get(:DrecsQFEnemy)
   else
-    Object.const_set(:DrecsQFEnemy, Struct.new)
+    Object.const_set(:DrecsQFEnemy, Drecs.tag(:enemy))
   end
 
   world = Drecs::World.new
@@ -63,7 +65,7 @@ def test_query_any_filter_struct_components(args, assert)
   c = world.spawn(position_klass.new(5, 6))
 
   ids = []
-  world.query(position_klass, any: [player_klass, enemy_klass]) do |entity_ids, _positions|
+  world.each_chunk(position_klass, any: [player_klass, enemy_klass]) do |entity_ids, _positions|
     ids.concat(entity_ids)
   end
 
@@ -87,13 +89,13 @@ def test_query_filters_hash_components(args, assert)
   c = world.spawn({ position: { x: 5, y: 6 } })
 
   without_ids = []
-  world.query(:position, without: [:foo]) do |entity_ids, _positions|
+  world.each_chunk(:position, without: [:foo]) do |entity_ids, _positions|
     without_ids.concat(entity_ids)
   end
   assert.equal! without_ids.sort, [b, c].sort
 
   any_ids = []
-  world.query(:position, any: [:foo, :bar]) do |entity_ids, _positions|
+  world.each_chunk(:position, any: [:foo, :bar]) do |entity_ids, _positions|
     any_ids.concat(entity_ids)
   end
   assert.equal! any_ids.sort, [a, b].sort

@@ -1,7 +1,11 @@
 # Item component - represents collectible items
 # type: :health, :key, :gold, :weapon
-class Item < Struct.new(:type, :value)
+class Item
+  include Drecs::Component
+  component :type, :value
+
   def initialize(type = :gold, value = 10)
-    super(type, value)
+    @type = type
+    @value = value
   end
 end

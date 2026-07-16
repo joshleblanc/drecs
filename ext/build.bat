@@ -2,7 +2,7 @@
 REM Build the drecs parallel runtime DLL.
 REM Run from drecs\ext\.
 setlocal
-set DR_INCLUDE=..\..\..\include
+set DR_INCLUDE=..\..\include
 
 REM Output to drecs\native\windows-amd64\ so DR.dlopen "drecs_parallel" finds it.
 set OUT_DIR=..\native\windows-amd64

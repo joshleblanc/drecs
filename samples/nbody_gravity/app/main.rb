@@ -33,15 +33,52 @@ DEFAULT_THREADS = 4
 # visible orbital motion at N=1500 in a 1280x720 space.
 G = 0.5
 
-# ECS component classes. Drecs.component(:x, :y) gives us Struct
-# subclasses with float members — same as plain Struct.new but
-# semantically tagged as a drecs component.
+# ECS component classes. Drecs.component(:x, :y) stores fields as @-ivars
+# (unlike Struct, whose fields live in an internal C array), which is what the
+# native kernel's mrb_iv_get path reads directly.
 Position = Drecs.component(:x, :y)
 Velocity = Drecs.component(:x, :y)
 Color    = Drecs.component(:r, :g, :b, :a)
 
 GameTime   = Struct.new(:elapsed, :delta)
 GameConfig = Struct.new(:particle_count, :threads, :use_native, :g)
+
+# ParticleDot is a persistent renderable view of one particle. We
+# dynamically push a new instance into `args.outputs.static_sprites`
+# when a particle is spawned and delete it when the particle is
+# removed — keeping the renderer's per-frame work exactly equal to
+# the live particle count, never iterating dead pool slots.
+#
+# Compare to `args.outputs.solids << { x:, y:, ... }` which allocates a
+# Hash per primitive per frame — at N=20000 that's 20000 GC-tracked
+# allocations every tick. Or to pre-allocating a fixed pool — which
+# forces DR to iterate the full pool even if only a fraction is
+# active, and burns memory you never use.
+#
+# Pattern adapted from `samples/99_genre_simulation/sand_simulation/`,
+# which handles ~50k elements at 60fps using the same approach.
+class ParticleDot
+  attr_sprite
+
+  def initialize
+    @path = :solid
+    @w    = 3
+    @h    = 3
+    @r    = 200
+    @g    = 200
+    @b    = 200
+    @a    = 255
+    @x    = 0
+    @y    = 0
+  end
+
+  # draw_override is the older but possibly faster path (used by
+  # samples/99_genre_simulation/sand_simulation for ~50k elements
+  # at 60fps). Compare perf against attr_sprite alone.
+  def draw_override(ffi)
+    ffi.draw_sprite_ivar self
+  end
+end
 
 # ---- Logging ---------------------------------------------------------------
 
@@ -57,7 +94,12 @@ end
 # Spawn `n` particles in a disk around the screen center with tangential
 # velocities. Tangential initial velocity gives them angular momentum so
 # they orbit instead of just collapsing to the center.
-def spawn_particles(world, n)
+#
+# Each spawned particle gets a matching ParticleDot pushed into
+# `args.outputs.static_sprites` and tracked in
+# `args.state[:renderables]` keyed by entity_id, so the renderer's
+# per-frame work is exactly proportional to the live particle count.
+def spawn_particles(world, n, static_sprites)
   return if n <= 0
   cx = RESOLUTION[:w] / 2.0
   cy = RESOLUTION[:h] / 2.0
@@ -83,24 +125,41 @@ def spawn_particles(world, n)
     g8 = (Math.sin(hue * 6.2832 + 2.094) * 127.0 + 128.0).to_i
     b8 = (Math.sin(hue * 6.2832 + 4.188) * 127.0 + 128.0).to_i
 
-    world.spawn(
+    color = Color.new(r8, g8, b8, 255)
+    eid = world.spawn(
       Position.new(px, py),
       Velocity.new(vx, vy),
-      Color.new(r8, g8, b8, 255)
+      color
     )
+
+    # Persistent renderable. Same instance across frames; DR reads
+    # its iVars via the sprite pipeline. Zero per-frame allocation.
+    r = ParticleDot.new
+    r.x = px - 1.5
+    r.y = py - 1.5
+    r.r = color.r
+    r.g = color.g
+    r.b = color.b
+    args.state[:renderables][eid] = r
+    static_sprites << r
+
     i += 1
   end
 end
 
 # Find a particle that has all three components (the highest-id one)
-# and remove it. Used for the `-` keypress.
-def remove_last_particle(world)
+# and remove it. Used for the `-` keypress. Also removes the matching
+# ParticleDot from args.outputs.static_sprites so the renderer's
+# iteration count drops with the live particle count.
+def remove_last_particle(world, static_sprites)
   ids = world.ids(Position)
   return false if ids.empty?
   victim = ids.last
   world.remove_component(victim, Position)
   world.remove_component(victim, Velocity)
   world.remove_component(victim, Color)
+  r = args.state[:renderables].delete(victim)
+  static_sprites.delete(r) if r
   true
 end
 
@@ -152,10 +211,18 @@ def boot(args)
   if args.state[:parallel_ok]
     world = Drecs::World.new
     setup_native_systems(world, DEFAULT_THREADS)
-    spawn_particles(world, PARTICLE_COUNT)
+
+    # Initialize the entity_id -> renderable map. spawn_particles
+    # below pushes one ParticleDot into args.outputs.static_sprites
+    # per spawned entity and stores it in this hash keyed by entity_id.
+    args.state[:renderables] = {}
+
+    spawn_particles(world, PARTICLE_COUNT, args.outputs.static_sprites)
+
     world.insert_resource(GameTime.new(0.0, 0.016))
     world.insert_resource(GameConfig.new(PARTICLE_COUNT, DEFAULT_THREADS, true, G))
     args.state[:world] = world
+
     flog "[nbody] spawned #{PARTICLE_COUNT} particles, native system registered"
   else
     flog "[nbody] native unavailable, will use ruby fallback if R toggled"
@@ -178,14 +245,14 @@ def tick(args)
 
   # --- Input: scaling particles ---
   if args.inputs.keyboard.key_down.plus || args.inputs.keyboard.key_down.equal
-    spawn_particles(world, 100)
+    spawn_particles(world, 100, args.outputs.static_sprites)
     config.particle_count += 100
     flog "[nbody] +100 particles -> #{config.particle_count}"
   end
 
   if args.inputs.keyboard.key_down.minus
     removed = 0
-    while removed < 100 && remove_last_particle(world)
+    while removed < 100 && remove_last_particle(world, args.outputs.static_sprites)
       removed += 1
     end
     config.particle_count = [config.particle_count - removed, 0].max
@@ -224,23 +291,33 @@ def tick(args)
   end
 
   # --- Render ---
-  solids = []
-  world.query(Position, Color) do |_entity_ids, positions, colors|
-    n = positions.length
-    i = 0
-    while i < n
+  # Sync each live drecs entity's Position/Color into its matching
+  # ParticleDot. The renderable pool is keyed by entity_id (a Hash)
+  # because drecs archetype swaps on destroy change row indices but
+  # entity_ids are stable.
+  #
+  # Previously this used Drecs::Parallel.blit_renderables (C-side sync)
+  # for a ~10x speedup. That helper has been removed from the runtime;
+  # write a native kernel if you need that path back. The plain Ruby
+  # loop below caps out around 5k particles; for higher counts, define
+  # a DRECS_KERNEL in your own extension that walks the struct stores
+  # and calls ParticleDot's attr_sprite setters in C.
+  renderables = args.state[:renderables]
+  world.each_chunk(Position, Color) do |entity_ids, positions, colors|
+    positions.length.times do |i|
+      eid = entity_ids[i]
+      ren = renderables[eid]
+      next unless ren
       pos = positions[i]
-      c   = colors[i]
-      # 3x3 dot. Bigger makes individual particles easier to track
-      # but blows up render cost; at N=1500, 3x3 is the sweet spot.
-      solids << {
-        x: pos.x - 1.5, y: pos.y - 1.5, w: 3, h: 3,
-        r: c.r, g: c.g, b: c.b, a: c.a
-      }
-      i += 1
+      col = colors[i]
+      ren.x = pos.x - 1.5
+      ren.y = pos.y - 1.5
+      ren.r = col.r
+      ren.g = col.g
+      ren.b = col.b
+      ren.a = col.a
     end
   end
-  args.outputs.solids << solids
 
   # --- Debug overlay ---
   # As with the boids sample: VISIBLE fps is what you see, sim is
@@ -274,7 +351,7 @@ SOFTENING_R = 0.001
 SOFTENING_SQ_R = SOFTENING_R * SOFTENING_R
 
 def ruby_nbody_step(world, dt)
-  world.query(Position, Velocity) do |_entity_ids, positions, velocities|
+  world.each_chunk(Position, Velocity) do |_entity_ids, positions, velocities|
     next if positions.empty?
     count = positions.length
 

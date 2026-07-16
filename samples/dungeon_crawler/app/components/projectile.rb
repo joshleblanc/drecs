@@ -1,6 +1,10 @@
 # Projectile component - tag for bullets/attacks
-class Projectile < Struct.new(:damage, :owner_id)
+class Projectile
+  include Drecs::Component
+  component :damage, :owner_id
+
   def initialize(damage = 20, owner_id = nil)
-    super(damage, owner_id)
+    @damage = damage
+    @owner_id = owner_id
   end
 end

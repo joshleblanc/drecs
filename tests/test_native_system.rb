@@ -1,7 +1,9 @@
 require 'lib/drecs.rb'
 
-class NSPosition < Struct.new(:x, :y); end
-class NSVelocity < Struct.new(:x, :y); end
+# Native systems require @-ivar components (Drecs.component), not Struct —
+# register_native_system enforces this.
+NSPosition = Drecs.component(:x, :y)
+NSVelocity = Drecs.component(:x, :y)
 
 # These tests exercise the Ruby-side wiring of register_native_system
 # and run_native_system. They intentionally do NOT depend on the
@@ -78,7 +80,8 @@ def test_run_native_system_without_runtime(args, assert)
   # Without the C extension loaded (i.e. Drecs::Parallel.run_kernel is
   # not defined), run_native_system must raise a clear error rather than
   # silently doing nothing.
-  if !defined?(::Drecs::Parallel) || !::Drecs::Parallel.respond_to?(:run_kernel)
+  # NOTE: `defined?` is not supported by DragonRuby's mruby; use const_defined?.
+  if !::Drecs.const_defined?(:Parallel) || !::Drecs::Parallel.respond_to?(:run_kernel)
     raised = false
     begin
       world.run_native_system(:integrate, dt: 0.016)

@@ -1,8 +1,10 @@
-Position = Struct.new(:x, :y)
-Velocity = Struct.new(:dx, :dy)
-Tag = Struct.new(:name)
+# Components use Drecs.component so their fields live as @-ivars (uniform with
+# the rest of the samples and compatible with native systems).
+Position = Drecs.component(:x, :y)
+Velocity = Drecs.component(:dx, :dy)
+Tag = Drecs.component(:name)
 
-# Define resources
+# Resources are plain Structs — they're global singletons, not entity components.
 GameTime = Struct.new(:elapsed, :delta)
 GameConfig = Struct.new(:simulation_speed, :show_debug)
 

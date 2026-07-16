@@ -1,7 +1,7 @@
 class CollisionSystem
   def call(world, args)
-    world.query(Position, Bullet) do |bullet_ids, bullet_positions, bullets|
-      world.query(Position, Enemy, Sprite) do |enemy_ids, enemy_positions, enemies, enemy_sprites|
+    world.each_chunk(Position, Bullet) do |bullet_ids, bullet_positions, bullets|
+      world.each_chunk(Position, Enemy, Sprite) do |enemy_ids, enemy_positions, enemies, enemy_sprites|
         Array.each_with_index(bullet_positions) do |bullet_pos, i|
           bullet_id = bullet_ids[i]
 

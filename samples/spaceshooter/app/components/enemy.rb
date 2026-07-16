@@ -1,5 +1,8 @@
-class Enemy < Struct.new(:direction)
+class Enemy
+  include Drecs::Component
+  component :direction
+
   def initialize(direction = 1)
-    super(direction)
+    @direction = direction
   end
 end

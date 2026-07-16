@@ -1,12 +1,17 @@
 # PlayerGrid component - stores player position in tile coordinates
 # Used for grid-based movement where player snaps to tiles
-class PlayerGrid < Struct.new(:grid_x, :grid_y, :facing)
+class PlayerGrid
+  include Drecs::Component
+  component :grid_x, :grid_y, :facing
+
   TILE_SIZE = 32
 
   DIRECTIONS = [:up, :down, :left, :right].freeze
 
   def initialize(grid_x = 0, grid_y = 0, facing = :down)
-    super(grid_x, grid_y, facing)
+    @grid_x = grid_x
+    @grid_y = grid_y
+    @facing = facing
   end
 
   # Convert tile coordinates to pixel coordinates (top-left of tile)

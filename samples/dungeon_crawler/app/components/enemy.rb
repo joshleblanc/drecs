@@ -1,8 +1,15 @@
-class Enemy < Struct.new(:type, :damage, :hp, :attack_cooldown, :detection_range)
+class Enemy
+  include Drecs::Component
+  component :type, :damage, :hp, :attack_cooldown, :detection_range
+
   ENEMY_TYPES = [:goblin, :skeleton, :orc].freeze
 
   def initialize(type = :goblin, damage = 10, hp = 30, attack_cooldown = 0, detection_range = 200)
-    super(type, damage, hp, attack_cooldown, detection_range)
+    @type = type
+    @damage = damage
+    @hp = hp
+    @attack_cooldown = attack_cooldown
+    @detection_range = detection_range
   end
 
   def can_attack?

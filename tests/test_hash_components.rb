@@ -17,7 +17,7 @@ def test_hash_query args, assert
   entity2 = world.spawn({ position: { x: 5, y: 15 }, velocity: { dx: 3, dy: 4 } })
 
   count = 0
-  world.query(:position, :velocity) do |entity_ids, positions, velocities|
+  world.each_chunk(:position, :velocity) do |entity_ids, positions, velocities|
     count = entity_ids.length
   end
 
@@ -34,7 +34,7 @@ def test_query_with_clause_filters_without_returning_components args, assert
   ids = []
   positions_seen = 0
 
-  world.query(:position, with: [:tag]) do |entity_ids, positions|
+  world.each_chunk(:position, with: [:tag]) do |entity_ids, positions|
     ids.concat(entity_ids)
     positions_seen += positions.length
   end
@@ -70,7 +70,7 @@ def test_hash_add_component args, assert
   assert.equal! velocity, { dx: 3, dy: 4 }
 
   count = 0
-  world.query(:position, :velocity) do |entity_ids, positions, velocities|
+  world.each_chunk(:position, :velocity) do |entity_ids, positions, velocities|
     count = entity_ids.length
   end
   assert.equal! count, 1
@@ -99,7 +99,7 @@ def test_destroy_query_hash_components args, assert
   world.destroy_query(:position, :velocity)
 
   count = 0
-  world.query(:position) do |entity_ids, positions|
+  world.each_chunk(:position) do |entity_ids, positions|
     count = entity_ids.length
   end
 
@@ -117,7 +117,7 @@ def test_destroy_from_query_hash_components args, assert
   world.destroy_from_query(q)
 
   count = 0
-  world.query(:position) do |entity_ids, positions|
+  world.each_chunk(:position) do |entity_ids, positions|
     count = entity_ids.length
   end
 

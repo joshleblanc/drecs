@@ -1,5 +1,8 @@
 # Tile component - tile type for dungeon tiles
-class Tile < Struct.new(:type)
+class Tile
+  include Drecs::Component
+  component :type
+
   # Tile type constants
   TILE_FLOOR = 0
   TILE_WALL = 1
@@ -9,7 +12,7 @@ class Tile < Struct.new(:type)
   TILE_TYPES = [:floor, :wall, :stairs_down, :stairs_up].freeze
 
   def initialize(type = :floor)
-    super(type)
+    @type = type
   end
 
   def walkable?

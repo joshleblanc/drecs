@@ -3,7 +3,7 @@
 class LootSystem
   def call(world, args)
     world.each_entity(Player, Position) do |player_id, _player, player_pos|
-      world.query(Position, Loot, Collider) do |entity_ids, positions, _loots, colliders|
+      world.each_chunk(Position, Loot, Collider) do |entity_ids, positions, _loots, colliders|
         i = 0
         len = entity_ids.length
         loot_collected = []

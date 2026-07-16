@@ -1,6 +1,10 @@
-class Position < Struct.new(:x, :y)
+class Position
+  include Drecs::Component
+  component :x, :y
+
   def initialize(x = 0, y = 0)
-    super(x, y)
+    @x = x
+    @y = y
   end
 
   def to_pixel_offset(tile_size = 32)

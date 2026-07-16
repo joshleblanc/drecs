@@ -1,4 +1,7 @@
-class Renderable < Struct.new(:layer)
+class Renderable
+  include Drecs::Component
+  component :layer
+
   LAYERS = {
     tile: 0,
     item: 1,
@@ -8,7 +11,7 @@ class Renderable < Struct.new(:layer)
   }.freeze
 
   def initialize(layer = 1)
-    super(layer)
+    @layer = layer
   end
 
   def self.tile_layer

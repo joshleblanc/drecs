@@ -4,7 +4,7 @@
 class CollisionSystem
   def call(world, args)
     projectiles = []
-    world.query(Position, Collider, Projectile) do |entity_ids, positions, colliders, _projectiles|
+    world.each_chunk(Position, Collider, Projectile) do |entity_ids, positions, colliders, _projectiles|
       i = 0
       len = entity_ids.length
       while i < len
@@ -14,7 +14,7 @@ class CollisionSystem
     end
 
     targets = []
-    world.query(Position, Collider, any: [Player, Enemy]) do |entity_ids, positions, colliders|
+    world.each_chunk(Position, Collider, any: [Player, Enemy]) do |entity_ids, positions, colliders|
       i = 0
       len = entity_ids.length
       while i < len

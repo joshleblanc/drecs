@@ -1,13 +1,13 @@
-Position = Struct.new(:x, :y)
-Velocity = Struct.new(:dx, :dy)
-Size = Struct.new(:w, :h)
-Color = Struct.new(:r, :g, :b)
+Position = Drecs.component(:x, :y)
+Velocity = Drecs.component(:dx, :dy)
+Size = Drecs.component(:w, :h)
+Color = Drecs.component(:r, :g, :b)
 
-Player = Struct.new(:speed)
-Enemy = Struct.new(:speed)
-Bullet = Struct.new(:ttl)
+Player = Drecs.component(:speed)
+Enemy = Drecs.component(:speed)
+Bullet = Drecs.component(:ttl)
 Frozen = Class.new
-HitEvent = Struct.new(:bullet_id, :enemy_id)
+HitEvent = Drecs.component(:bullet_id, :enemy_id)
 
 PLAYER_BUNDLE = Drecs.bundle(Position, Velocity, Size, Color, Player)
 ENEMY_BUNDLE = Drecs.bundle(Position, Velocity, Size, Color, Enemy)
@@ -202,7 +202,7 @@ end
 
 def handle_collisions(args, world)
   bullets = []
-  world.query(Position, Size, any: [Bullet], changed: [Position]) do |entity_ids, positions, sizes|
+  world.each_chunk(Position, Size, any: [Bullet], changed: [Position]) do |entity_ids, positions, sizes|
     i = 0
     len = entity_ids.length
     while i < len
@@ -214,7 +214,7 @@ def handle_collisions(args, world)
   return if bullets.empty?
 
   enemies = []
-  world.query(Position, Size, any: [Enemy]) do |entity_ids, positions, sizes|
+  world.each_chunk(Position, Size, any: [Enemy]) do |entity_ids, positions, sizes|
     i = 0
     len = entity_ids.length
     while i < len
@@ -304,7 +304,7 @@ def update_render_cache(args, world)
 
   if args.state.full_render
     cache.clear
-    world.query(Position, Size, Color, any: tags) do |entity_ids, positions, sizes, colors|
+    world.each_chunk(Position, Size, Color, any: tags) do |entity_ids, positions, sizes, colors|
       i = 0
       len = entity_ids.length
       while i < len
@@ -331,7 +331,7 @@ def update_render_cache(args, world)
     return
   end
 
-  world.query(Position, Size, Color, any: tags, changed: [Position]) do |entity_ids, positions, sizes, colors|
+  world.each_chunk(Position, Size, Color, any: tags, changed: [Position]) do |entity_ids, positions, sizes, colors|
     i = 0
     len = entity_ids.length
     while i < len

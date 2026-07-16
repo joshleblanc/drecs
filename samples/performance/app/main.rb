@@ -1,8 +1,8 @@
-Position = Struct.new(:x, :y)
-Velocity = Struct.new(:dx, :dy)
-Health = Struct.new(:current, :max)
-Damage = Struct.new(:value)
-Tag = Struct.new(:name)
+Position = Drecs.component(:x, :y)
+Velocity = Drecs.component(:dx, :dy)
+Health = Drecs.component(:current, :max)
+Damage = Drecs.component(:value)
+Tag = Drecs.component(:name)
 
 SCENARIOS = [
   { name: "1K Entities - Simple Query", count: 1000 },

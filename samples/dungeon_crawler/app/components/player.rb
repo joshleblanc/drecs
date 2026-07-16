@@ -1,8 +1,13 @@
-class Player < Struct.new(:facing_direction, :attack_cooldown, :speed)
+class Player
+  include Drecs::Component
+  component :facing_direction, :attack_cooldown, :speed
+
   DIRECTIONS = [:up, :down, :left, :right].freeze
 
   def initialize(facing_direction = :down, attack_cooldown = 0, speed = 4.0)
-    super(facing_direction, attack_cooldown, speed)
+    @facing_direction = facing_direction
+    @attack_cooldown = attack_cooldown
+    @speed = speed
   end
 
   def can_attack?

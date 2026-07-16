@@ -16,7 +16,7 @@ class PickupSystem
     items_to_destroy = []
 
     # Check for items at player position using query with entity_ids
-    world.query(Item, Position) do |entity_ids, items, positions|
+    world.each_chunk(Item, Position) do |entity_ids, items, positions|
       i = 0
       len = items.length
       while i < len

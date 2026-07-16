@@ -1,6 +1,9 @@
-class Collider < Struct.new(:radius)
+class Collider
+  include Drecs::Component
+  component :radius
+
   def initialize(radius = 16)
-    super(radius)
+    @radius = radius
   end
 
   def diameter

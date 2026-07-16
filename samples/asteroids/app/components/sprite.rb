@@ -1,1 +1,1 @@
-Sprite = Struct.new(:path, :w, :h, :r, :g, :b, :a)
+Sprite = Drecs.component(:path, :w, :h, :r, :g, :b, :a)

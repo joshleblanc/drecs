@@ -140,7 +140,7 @@ class RenderSystem
 
   # Render enemies from Position/Sprite (pixel coordinates)
   def render_enemies(world, args)
-    world.query(Position, Sprite, Enemy) do |entity_ids, positions, sprites, _enemies|
+    world.each_chunk(Position, Sprite, Enemy) do |entity_ids, positions, sprites, _enemies|
       i = 0
       len = entity_ids.length
       while i < len
@@ -163,7 +163,7 @@ class RenderSystem
     end
 
     # Render enemy health bars
-    world.query(Position, Health, Enemy) do |entity_ids, positions, healths, _enemies|
+    world.each_chunk(Position, Health, Enemy) do |entity_ids, positions, healths, _enemies|
       i = 0
       len = entity_ids.length
       while i < len
@@ -193,7 +193,7 @@ class RenderSystem
 
   # Render items (gold, potions, stairs)
   def render_items(world, args)
-    world.query(Position, Sprite, Item) do |entity_ids, positions, sprites, items|
+    world.each_chunk(Position, Sprite, Item) do |entity_ids, positions, sprites, items|
       i = 0
       len = entity_ids.length
       while i < len

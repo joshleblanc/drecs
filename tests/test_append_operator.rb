@@ -56,7 +56,7 @@ def test_append_entity_queryable args, assert
   world << [Position.new(30, 40), Velocity.new(3, 4)]
 
   count = 0
-  world.query(Position, Velocity) do |entity_ids, positions, velocities|
+  world.each_chunk(Position, Velocity) do |entity_ids, positions, velocities|
     count = entity_ids.length
   end
 
@@ -73,7 +73,7 @@ def test_destroy_query_struct_components args, assert
   world.destroy_query(Position, Velocity)
 
   count = 0
-  world.query(Position) do |entity_ids, positions|
+  world.each_chunk(Position) do |entity_ids, positions|
     count = entity_ids.length
   end
 

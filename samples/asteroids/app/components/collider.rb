@@ -1,1 +1,1 @@
-Collider = Struct.new(:radius)
+Collider = Drecs.component(:radius)

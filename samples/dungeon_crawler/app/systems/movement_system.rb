@@ -8,7 +8,7 @@ class MovementSystem
     grid_h = args.grid.h
 
     # Use query for high-performance batch iteration
-    world.query(Position, Velocity) do |entity_ids, positions, velocities|
+    world.each_chunk(Position, Velocity) do |entity_ids, positions, velocities|
       i = 0
       len = entity_ids.length
       while i < len

@@ -1,1 +1,1 @@
-Rotation = Struct.new(:angle, :angular_velocity)
+Rotation = Drecs.component(:angle, :angular_velocity)

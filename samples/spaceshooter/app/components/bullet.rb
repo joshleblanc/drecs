@@ -1,5 +1,8 @@
-class Bullet < Struct.new(:damage)
+class Bullet
+  include Drecs::Component
+  component :damage
+
   def initialize(damage = 1)
-    super(damage)
+    @damage = damage
   end
 end

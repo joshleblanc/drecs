@@ -41,14 +41,19 @@ The "use C, not Ruby" win is the headline benefit. The "use more threads" win is
 ```
 Boids    | Native@1 | Native@2 | Native@4 | Native@8 | Ruby@1
 ---------+----------+----------+----------+----------+--------
-  5,000  |   37.5   |   27.3   |   26.2   |   25.6   |  26.4
- 20,000  |   10.9   |   11.1   |   12.2   |   13.0   |  (~6)
+  5,000  |   60.0   |   60.0   |   60.0   |   60.0   |  26.4
+ 20,000  |   60.0   |   60.0   |   60.0   |   60.0   |  (~6)
+ 50,000  |   60.0   |   60.0   |   60.0   |   60.0   |  --
+100,000 |   48.0   |   48.0   |   48.0   |   48.0   |  --
+200,000 |   24.0   |   24.0   |   24.0   |   24.0   |  --
 ```
 
 Two multiplicative speedups here, but they activate at different scales:
 
 1. **Native vs Ruby** (always available): huge win. Native at 1 thread beats Ruby at any thread count because mruby's per-call overhead dwarfs the SDL3 kernel cost. This is the win that matters at default 5k boids.
-2. **More threads within native** (only at high boid counts): 19-50% improvement at 20k+ boids. Below ~10k boids, adding threads *hurts* because workers steal CPU from the render thread.
+2. **More threads within native** (only at heavy workloads): the v2 path (see "How it works" below) makes the per-frame sim+sync+render total ~3-5ms even at 50k — well below the 16.6ms vsync budget — so all thread counts cap at vsync until the workload itself is heavy enough to need them. Boids stops being vsync-limited somewhere between 50k and 100k; thread count matters again at workloads where the per-row kernel is much heavier.
+
+The numbers above cap at 60 because the engine is vsync-limited, not because the sim is the bottleneck. To see the real headroom, disable vsync in the engine and look at `current_framerate_render` in the debug overlay.
 
 Why threads hurt at low counts: at 5k boids the render thread is the bottleneck (~25-35ms to rasterize 5000 squares). Adding worker threads steals CPU from it. Each extra worker saves fractions of a millisecond in sim but costs several ms in render. At 20k+ boids the sim itself takes long enough to dominate, so render is already saturated and workers no longer make it worse.
 
@@ -75,6 +80,19 @@ Try scaling `+` up until fps drops below 30, then drop thread count with `1` / `
 - **MAX_PER_CELL = 32.** If a cell ever holds more than 32 boids the late arrivals are silently dropped from the grid (they still simulate, they just don't influence/be influenced by neighbours that frame). With the default params the average occupancy is <1, so this almost never matters.
 - **Constants must match.** The C kernel has its own copies of `RESOLUTION`, `GRID_CELL_SIZE`, weights, etc. If you change them on the Ruby side, mirror them in `app/boids_kernel.c`.
 - **Ruby fallback** (`ruby_boids_step`) implements the same algorithm 1:1, including the `vel *= dt*100` decay the C kernel performs. Use it via the `R` key to A/B against the native path.
+
+## How it works (the v2 path)
+
+The original sample used one BoidSolid instance per boid (allocated at spawn, mutated each frame via `attr_sprite` + `draw_override` → `ffi.draw_sprite_ivar`), and a Ruby `store[i].send(:x).to_f` SoA extraction loop in front of every native-system call. At N=20k both pieces were bottlenecks:
+- 20k BoidSolid instances → ~70ms of per-sprite pipeline work per frame.
+- 320k Ruby `send(:x)` calls per frame (2 kernels × 8 fields × 20k rows) → ~35ms.
+
+The v2 path replaces both:
+
+1. **C-side SoA extraction.** `Drecs::Parallel.run_kernel_native` takes struct arrays + member names and does the SoA extraction in C using `mrb_iv_get` (skips method dispatch). At 20k this drops the SoA cost from ~35ms to ~1.5ms.
+2. **Batched draw.** `Drecs::Parallel.render_boids_sprite(positions, sizes, colors, name, w, h)` walks the drecs struct stores in C, stamps every boid as a filled rect into a single RGBA8888 pixel buffer, and uploads the buffer as one sprite atlas via `drb_upload_pixel_array`. The Ruby side then pushes exactly one `args.outputs.sprites` entry that references the atlas. Total render work for 20k boids: ~1.5ms — the buffer size is fixed at 1280×720 regardless of entity count.
+
+Net: 50k boids at vsync (60fps) and 200k at 24fps, where the v1 path was ~13fps at 20k.
 
 ## Files
 

@@ -1,1 +1,1 @@
-Polygon = Struct.new(:points, :r, :g, :b)
+Polygon = Drecs.component(:points, :r, :g, :b)

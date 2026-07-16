@@ -1,6 +1,10 @@
-class Health < Struct.new(:current, :max)
+class Health
+  include Drecs::Component
+  component :current, :max
+
   def initialize(current = 100, max = 100)
-    super(current, max)
+    @current = current
+    @max = max
   end
 
   def dead?

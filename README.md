@@ -18,7 +18,7 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 - **Flexible component operations** - Add, remove, or batch-update components with archetype migration
 - **Native systems (SDL3-threaded)** - Real parallel execution via `register_native_system` / `run_native_system` and a C extension
 - **Debug/inspection tools** - Built-in methods to understand world state and performance, plus an in-game debug overlay
-- **Ergonomic helpers** - `Drecs.tag`, `Drecs.component`, `find_entity`, `cached_query`, `event?`/`event_count`, `fetch_resource`, `snapshot`/`restore`, `validate!`, `dump`, and more
+- **Ergonomic helpers** - `Drecs.tag`, `Drecs.component`, `Drecs::Component` mixin, `find_entity`, `cached_query`, `event?`/`event_count`, `fetch_resource`, `snapshot`/`restore`, `validate!`, `dump`, and more
 
 ## Installation
 
@@ -28,9 +28,71 @@ In a dragonruby project, run the following in your dragonruby console:
 GTK.download_stb_rb "https://github.com/joshleblanc/drecs/blob/master/lib/drecs.rb"
 ```
 
+This downloads the single `lib/drecs.rb` file — that's all you need. The
+native SDL3 runtime in `ext/` is **optional** and only required if you use
+`register_native_system` / `run_native_system`; drecs loads fine without it.
+
 ## Usage
 
-Simply `require "joshleblanc/drecs/drecs.rb"` at the top of your `main.rb`.
+Require drecs at the top of your `main.rb`. Use whichever path matches how you
+installed it:
+
+```ruby
+# Installed via GTK.download_stb_rb (vendored under the author/repo path):
+require "joshleblanc/drecs/drecs.rb"
+
+# Or, if you vendored the file yourself into your project's lib/:
+require "lib/drecs"
+```
+
+## Canonical API (start here)
+
+Drecs ships many aliases for backwards compatibility, which can make it hard to
+know what to reach for. **Prefer the canonical method in each row below**; the
+others are kept working but are not the documented path.
+
+| Operation                     | Canonical             | Aliases (still work)                     |
+|-------------------------------|-----------------------|------------------------------------------|
+| Create an entity              | `spawn`               | `create`, `<<`                           |
+| Read one component            | `get_component`       | `get`, `[]`                              |
+| Add/replace one component     | `set_component`       | —                                        |
+| Add/replace many (one move)   | `set_components`      | `set`, `upsert`                          |
+| Add a *new* component type    | `add_component`       | `add`                                    |
+| Remove a component            | `remove_component`    | `remove`                                 |
+| Has a component?              | `has_component?`      | `has?`, `component?`                     |
+| Entity alive?                 | `entity_exists?`      | `exists?`, `alive?`                      |
+| Destroy entities              | `destroy`             | `delete`, `despawn`                      |
+| Per-entity iteration (AoS)    | `each_entity`         | `each`, `query`                          |
+| Batched iteration (SoA, fast) | `each_chunk`          | —                                        |
+| Cached hot-path query         | `cached_query`        | `query_for`                              |
+| First match (id + components) | `first_entity`        | `first`                                  |
+| First match (id only)         | `find_entity`         | —                                        |
+
+### Per-entity vs batched iteration
+
+There are two ways to iterate, with clearly separated names:
+
+```ruby
+# Per-entity (AoS) — `query` / `each_entity`. Yields (entity_id, *components)
+# one entity at a time. With or without a block:
+world.each_entity(Position, Velocity) do |id, pos, vel|
+  pos.x += vel.dx
+end
+id, pos, vel = world.query(Position, Velocity).first   # no block → enumerator
+
+# Batched (SoA, fast path) — `each_chunk`. Yields the entity_ids array followed
+# by one parallel array per component, per archetype chunk:
+world.each_chunk(Position, Velocity) do |ids, positions, velocities|
+  i = 0
+  while i < ids.length
+    positions[i].x += velocities[i].dx
+    i += 1
+  end
+end
+```
+
+`query` and `each_entity` are interchangeable (per-entity). Reach for
+`each_chunk` only when you specifically want the SoA arrays for a tight loop.
 
 ### Creating a World
 
@@ -62,9 +124,9 @@ end
 
 ### Defining Components
 
-Components can be simple Ruby Structs or plain hashes for rapid prototyping:
+Components can be `Drecs.component` classes, the `Drecs::Component` mixin, or plain hashes for rapid prototyping:
 
-**Struct Components (recommended for production):**
+**Class Components (recommended for production):**
 
 ```ruby
 Position = Drecs.component(:x, :y)
@@ -77,12 +139,46 @@ Player = Drecs.tag(:player)
 Enemy  = Drecs.tag(:enemy)
 ```
 
-`Drecs.component(*members)` is sugar for `Struct.new(*members)`. `Drecs.tag(name)`
-returns a `Struct` with one `:tag_name` field, pre-populated with the symbol you
-passed in. It introspects cleanly (`Player.tag_name == :player`) and avoids the
-`Struct.new("Player")` weirdness.
+`Drecs.component(*members)` returns a class whose fields are stored as plain
+`@-ivars` (getter/setter accessors plus a Struct-ish `members`/`values`/`[]`
+API). It is **not** a `Struct` — storing fields as ivars is what lets native
+kernels read them directly via `mrb_iv_get`, and it sidesteps the hot-reload
+trap of `class X < Struct.new(...)` (see Pitfalls). `Drecs.tag(name)` returns a
+zero-field marker class (also **not** a `Struct`) that introspects cleanly on
+both the class and its instances (`Player.tag_name == :player`,
+`Player.new.tag_name == :player`).
 
-You can still use plain `Struct.new` directly — both forms work identically.
+When a component needs **methods** or **real class constants**, use the
+`Drecs::Component` mixin so it reads as an ordinary, named class — no
+`X = Drecs.component(...)` + `class X` reopen dance:
+
+```ruby
+class Velocity
+  include Drecs::Component
+  component :dx, :dy
+
+  def initialize(dx = 0, dy = 0) # optional: add defaults
+    @dx = dx
+    @dy = dy
+  end
+
+  def moving? = dx != 0 || dy != 0
+  def speed   = Math.sqrt(dx * dx + dy * dy)
+end
+
+class Tile
+  include Drecs::Component
+  component :type
+
+  TILE_FLOOR = 0   # a real class constant: `Tile::TILE_FLOOR` works
+end
+```
+
+For a quick one-liner with methods, `Drecs.component` also accepts a block
+(like `Struct.new`): `Velocity = Drecs.component(:dx, :dy) { def speed = ... }`.
+Note that constants assigned inside that block are **not** class constants
+(Ruby scopes them lexically) — use the mixin form when you need
+`Tile::TILE_FLOOR`.
 
 **Hash Components (great for MVPs and prototyping):**
 
@@ -96,7 +192,7 @@ entity = world.spawn({
 })
 
 # Query using symbols instead of classes
-world.query(:position, :velocity) do |entity_ids, positions, velocities|
+world.each_entity(:position, :velocity) do |entity_id, position, velocity|
   # ...
 end
 ```
@@ -201,93 +297,9 @@ if world.entity_exists?(entity_id)
 end
 ```
 
-### UI System (Drecs::UI)
-
-Drecs ships with a lightweight ECS-driven UI module. UI elements are regular entities with UI components; the UI is updated via ECS systems just like gameplay logic.
-
-**Setup**
-
-```ruby
-world = Drecs::World.new
-Drecs::UI.install(world)
-```
-
-**Core UI Components**
-
-- `UiNode` — tag component identifying a UI entity.
-- `UiLayout(x, y, w, h, layout, padding, gap, align, justify)`
-  - `x`, `y` are offsets inside the parent container.
-  - `w`, `h` define the size. If `w`/`h` are `0` or `nil`, the layout system stretches to the parent’s content size (minus padding).
-  - `layout` is `:column` or `:row` for child flow direction.
-  - `padding` is inner spacing; `gap` is spacing between children.
-  - `align`/`justify` are reserved for future alignment support.
-- `UiStyle(bg, border, border_thickness, text_color)`
-  - `bg` / `border` are color hashes: `{ r:, g:, b:, a: }`.
-  - `border_thickness` and `text_color` are reserved for future styling.
-- `UiText(text, size_enum)` — text label (rendered using DragonRuby labels).
-- `UiInput(hovered, pressed, on_click)` — click handling; `on_click` gets `(entity_id, world)`.
-
-**Example**
-
-```ruby
-UI = Drecs::UI
-
-root = world.spawn(
-  UI::UiNode.new("root"),
-  UI::UiLayout.new(0, 0, args.grid.w, args.grid.h, :column, 24, 12, :start, :start)
-)
-
-panel = world.spawn(
-  UI::UiNode.new("panel"),
-  UI::UiLayout.new(0, 0, 420, 220, :column, 12, 8, :start, :start),
-  UI::UiStyle.new({ r: 12, g: 12, b: 20, a: 220 }, { r: 50, g: 60, b: 80 }, 1, nil)
-)
-world.set_parent(panel, root)
-
-button = world.spawn(
-  UI::UiNode.new("button"),
-  UI::UiLayout.new(0, 0, 200, 36, :row, 0, 0, :start, :start),
-  UI::UiStyle.new({ r: 40, g: 120, b: 220, a: 230 }, { r: 50, g: 60, b: 80 }, 1, nil),
-  UI::UiText.new("Click me", 2),
-  UI::UiInput.new(false, false, ->(_id, w) { puts "clicked" })
-)
-world.set_parent(button, panel)
-```
-
-See `samples/ui_demo` for a full retained-mode UI example.
-
 ### Querying Entities
 
-The `query` method returns component arrays for high-performance batch processing:
-
-```ruby
-# Query yields entity_ids first, then component arrays
-world.query(Position, Velocity) do |entity_ids, positions, velocities|
-  # Arrays are aligned by index
-  i = 0
-  while i < entity_ids.length
-    pos = positions[i]
-    vel = velocities[i]
-    pos.x += vel.dx
-    pos.y += vel.dy
-    i += 1
-  end
-end
-```
-
-For maximum performance in hot loops (e.g., systems running every frame), use `query_for` to pre-cache the query structure. This avoids signature normalization and hash lookups entirely during iteration.
-
-```ruby
-# In your system initialization:
-@movement_query = world.query_for(Position, Velocity)
-
-# In your tick/update method:
-@movement_query.each do |entity_ids, positions, velocities|
-  # ... tight loop logic ...
-end
-```
-
-For per-entity iteration, use `each_entity` (more ergonomic but slightly slower):
+For per-entity iteration, use `each_entity` (or its alias `query`):
 
 ```ruby
 # Iterate over individual entities
@@ -304,6 +316,36 @@ world.each_entity(Health, Enemy) do |entity_id, health|
 end
 ```
 
+For the fastest batch processing, use `each_chunk`, which yields the
+`entity_ids` array followed by one parallel array per component:
+
+```ruby
+# each_chunk yields entity_ids first, then component arrays (SoA)
+world.each_chunk(Position, Velocity) do |entity_ids, positions, velocities|
+  # Arrays are aligned by index
+  i = 0
+  while i < entity_ids.length
+    pos = positions[i]
+    vel = velocities[i]
+    pos.x += vel.dx
+    pos.y += vel.dy
+    i += 1
+  end
+end
+```
+
+For maximum performance in hot loops (e.g., systems running every frame), use `cached_query` to pre-cache the query structure. This avoids signature normalization and hash lookups entirely during iteration. A cached `Query#each` yields SoA arrays, like `each_chunk`.
+
+```ruby
+# In your system initialization:
+@movement_query = world.cached_query(Position, Velocity)
+
+# In your tick/update method:
+@movement_query.each do |entity_ids, positions, velocities|
+  # ... tight loop logic ...
+end
+```
+
 #### Query Filters
 
 You can filter queries without per-entity `has_component?` checks:
@@ -314,8 +356,8 @@ world.each_entity(Position, without: Velocity) do |entity_id, pos|
   # ...
 end
 
-# Entities with Position and (Player OR Enemy)
-world.query(Position, any: [Player, Enemy]) do |entity_ids, positions|
+# Entities with Position and (Player OR Enemy) — SoA batch form
+world.each_chunk(Position, any: [Player, Enemy]) do |entity_ids, positions|
   # ...
 end
 ```
@@ -343,12 +385,22 @@ If you use `world.tick(args)` to run systems, it automatically calls `advance_ch
 
 > **Note:** `concurrent_query` is **deprecated** as of this version. The
 > threading promise was theatrical under mruby (which is single-threaded), so
-> `concurrent_query` now forwards to plain `query` and emits a deprecation
+> `concurrent_query` now forwards to `each_chunk` and emits a deprecation
 > warning. For real parallel execution, use **native systems** — drecs manages
 > the SDL3 thread fan-out from Ruby while your kernel runs in C on `double*`
 > buffers.
 
+> **Components used by native systems MUST be defined with `Drecs.component(...)`
+> or the `Drecs::Component` mixin, not `Struct.new(...)`.** Native kernels read fields via the C `mrb_iv_get`
+> path, which only sees fields stored as `@-ivars`. A `Struct`'s fields live in
+> an internal C array `mrb_iv_get` can't read, so a Struct-based component would
+> silently feed all-zeros into your kernel. `register_native_system` now raises
+> an `ArgumentError` if you pass a Struct-based component, to catch this early.
+
 ```ruby
+Position = Drecs.component(:x, :y)   # NOT Struct.new — see note above
+Velocity = Drecs.component(:x, :y)
+
 DR.dlopen "drecs_parallel"
 DR.dlopen "my_systems"
 Drecs::Parallel.load
@@ -544,13 +596,20 @@ world.validate!
 
 ```ruby
 # Capture the entire world state (entities + components + resources + events)
-# into a Hash. The struct components are deep-copied via Marshal so mutating
-# the snapshot doesn't affect the live world.
+# into a Hash. Components are copied into fresh instances (nested Array/Hash
+# field values are dup'd one level deep) so mutating the live world doesn't
+# affect the snapshot. NOTE: mruby has no Marshal, so structures nested more
+# than one level deep are still aliased.
 snap = world.snapshot
 
-# ...later, in another world or another session:
+# ...later, in another world or another session. Entities are re-id'd
+# sequentially from 0; built-in Parent/Children components are remapped to
+# the new ids automatically. If your own components store entity ids, remap
+# them via the optional block, which receives { old_id => new_id }:
 fresh = Drecs::World.new
-fresh.restore(snap)
+fresh.restore(snap) do |id_map|
+  fresh.each_entity(Targeting) { |_id, t| t.target = id_map[t.target] }
+end
 
 # If the same query runs every frame, build a cached Query once instead of
 # re-normalizing the signature every call:
@@ -582,19 +641,13 @@ world.fetch_resource(:score) { 0 }         # returns 0 if missing
 world.has_resource?(:score)     # true/false
 ```
 
-### World Construction Presets
+### World Construction
 
 ```ruby
-# Development (default) — debug overlay on, no duplicate-component validation
+# Default — no duplicate-component validation (fastest hot path).
 world = Drecs::World.new
 
-# Production — debug overlay off, duplicate-component validation on
-world = Drecs::World.new(mode: :production)
-
-# Explicit kwargs always win over mode:
-world = Drecs::World.new(mode: :production, debug_overlay: true)
-
-# Validation alone:
+# Turn on validation when shipping or debugging:
 world = Drecs::World.new(validate_components: true)
 ```
 
@@ -692,8 +745,8 @@ If you don't use named scheduled systems, `world.tick(args)` will continue to ru
 
 ## Performance Tips
 
-1. **Use `query` for batch operations** - When processing many entities, `query` is faster than `each_entity` because it works with raw arrays
-2. **Use `cached_query` for hot-path queries** - If the same `query` runs every frame, build a `cached_query` once and reuse it; signature normalization runs once instead of every call
+1. **Use `each_chunk` for batch operations** - When processing many entities, `each_chunk` is faster than `each_entity`/`query` because it works with raw SoA arrays
+2. **Use `cached_query` for hot-path queries** - If the same query runs every frame, build a `cached_query` once and reuse it; signature normalization runs once instead of every call
 3. **Batch component changes** - Use `set_components` instead of multiple `add_component` calls to avoid repeated archetype migrations
 4. **Batch entity destruction** - Collect entity IDs and call `destroy(*ids)` once instead of destroying individually
 5. **Component reuse** - Modify component values in-place when possible instead of creating new component instances
@@ -710,7 +763,10 @@ Since entities are just integers and components are just data, DrECS works natur
 
 ```ruby
 # app/components/position.rb
-class Position < Struct.new(:x, :y); end
+class Position
+  include Drecs::Component
+  component :x, :y
+end
 
 # app/systems/movement_system.rb
 class MovementSystem
@@ -782,51 +838,65 @@ DragonRuby's hot reload will throw `superclass mismatch for class PlayerGrid`
 on the next reload and you'll need to `GTK.reboot` (Shift+Ctrl+R / Cmd+R).
 This is a DragonRuby / mruby constraint, not a drecs bug.
 
-**Fix:** use the bare `Struct.new` assignment form, or `Drecs.component`:
+**Fix:** use the `Drecs.component` assignment form, or — when you want a named
+class with methods/constants — the `Drecs::Component` mixin:
 
 ```ruby
-PlayerGrid = Struct.new(:grid_x, :grid_y)
-# or
 PlayerGrid = Drecs.component(:grid_x, :grid_y)
+# or, when you need methods and/or class constants:
+class PlayerGrid
+  include Drecs::Component
+  component :grid_x, :grid_y
+
+  TILE_SIZE = 32
+  def to_pixel = { x: grid_x * TILE_SIZE, y: grid_y * TILE_SIZE }
+end
 ```
 
-If you need methods on your component, you can monkey-patch the Struct or use
-the `class << self` form, but avoid `class Foo < Struct.new(...)`.
+Both reopen the *same* named class on reload (no anonymous superclass), so
+hot reload stays happy. Avoid `class Foo < Struct.new(...)`.
 
-### Two yield shapes for `query`
+### Per-entity (`query`/`each_entity`) vs batched (`each_chunk`)
 
-The block form yields SoA arrays (fast path). The enumerator form (no block)
-yields per-entity tuples (ergonomic path). They look similar but are very
-different:
+`query` and `each_entity` are the per-entity (AoS) view; `each_chunk` is the
+Structure-of-Arrays (SoA) fast path. They are now clearly distinct methods, so
+there is no longer a footgun where the same method changes shape based on the
+block:
 
 ```ruby
-# Block form — yields arrays. ALWAYS do this in hot paths.
-world.query(Position, Velocity) do |ids, positions, velocities|
+# Per-entity — yields (entity_id, *components), one entity at a time.
+world.each_entity(Position, Velocity) do |id, pos, vel|
+  pos.x += vel.dx
+end
+id, pos, vel = world.query(Position, Velocity).first   # no block → enumerator
+
+# Batched (SoA) — yields the entity_ids array, then one array per component.
+world.each_chunk(Position, Velocity) do |ids, positions, velocities|
   # ids[0..n], positions[0..n], velocities[0..n] — index-aligned
 end
-
-# Enumerator form — yields per-entity. Use for `first`, `each`, `to_a`.
-id, pos, vel = world.query(Position, Velocity).first
-world.query(Position, Velocity).each { |id, pos, vel| ... }
 ```
 
-Don't mix them — if you reflexively write `do |id, pos, vel|` against the
-block form, you'll silently get `[id, [positions], [velocities]]` and crash
-two lines later.
+> **Migrating from older drecs:** the block form of `query` used to yield SoA
+> arrays. It now yields per-entity tuples. Replace any
+> `query(...) do |ids, positions, ...|` with `each_chunk(...)`.
 
 ### Struct components and hash components are two parallel worlds
 
 You can use either, but they don't fully interoperate:
 
-- `on_added(Position)` works on the struct path; `on_added(:position)` does
-  not (hooks are keyed by Class only).
+- Lifecycle hooks are keyed by whatever you spawned with. `on_added(Position)`
+  fires for struct components; `on_added(:position)` fires for hash components.
+  They do **not** cross over — a struct `Position` won't trigger a `:position`
+  hook and vice versa. (See `samples/snake`, which uses `on_added(:food)` with
+  hash components.)
 - `world.spawn(Position.new(...))` and `world.spawn({ position: {...} })`
   create entities in different internal layouts, though queries against
   either key return the same data.
 - Code review can't tell from a call site which kind is in use.
 
-Pick one for a project and stick with it. Mixing is supported but you'll find
-out the hard way that half your lifecycle hooks fired and half didn't.
+Pick one for a project and stick with it. Mixing is supported, but if you spawn
+with one model and register hooks/queries against the other, they simply won't
+match.
 
 ### `set_components` on archetype migration bumps everything
 

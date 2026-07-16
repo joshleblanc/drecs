@@ -1,512 +1,325 @@
-require 'ext/drecs_parallel.rb'
+# The native (SDL3-threaded) runtime is OPTIONAL. drecs degrades gracefully
+# when it isn't present (see World#each_entity / #run_native_system, which
+# both feature-detect `Drecs::Parallel`). Loading it must therefore never be
+# fatal â€” a `GTK.download_stb_rb` single-file install of `lib/drecs.rb` won't
+# ship `ext/drecs_parallel.rb`, and that's fine.
+begin
+  require 'ext/drecs_parallel.rb'
+rescue LoadError, StandardError
+  # Native runtime unavailable; pure-Ruby paths are used instead.
+end
 
 module Drecs
   # Native system support is provided by ext/drecs_parallel.rb (Drecs::Parallel)
   # plus the World#register_native_system / World#run_native_system pair below.
+  #
+  # For high-performance rendering, write a native kernel that walks the
+  # drecs struct stores and pushes to args.outputs via the standard native
+  # system flow â€” there's no separate render API by design.
 
   module SignatureHelper 
     def normalize_signature(component_classes)
-      component_classes.sort_by { |c| c.is_a?(Class) ? c.name : c.to_s }.freeze
+      # Anonymous classes (e.g. a `Drecs.component(...)` result that hasn't
+      # been assigned to a constant yet) have a nil name; fall back to a
+      # stable per-class key so sorting never compares nil against a String.
+      component_classes.sort_by { |c| c.is_a?(Class) ? (c.name || "~anon~#{c.object_id}") : c.to_s }.freeze
     end
   end
 
-  def self.component(*members)
-    Struct.new(*members)
+  # Install the drecs component accessors (the @-ivar getters/setters plus the
+  # Struct-ish `members`/`values`/`[]`/`[]=` API) onto `klass`. Shared by both
+  # `Drecs.component` (anonymous-class form) and the `Drecs::Component` mixin
+  # (named-class form) so the two stay byte-for-byte identical.
+  #
+  # Why @-ivars and not `Struct.new(*members)`: mruby's Struct stores fields in
+  # an internal C array, NOT as @-ivars. So `mrb_iv_get(obj, :x)` returns nil,
+  # and `mrb_iv_set(obj, :x, v)` writes to a separate slot the Struct accessor
+  # `.x` never reads. The two stay desynced forever â€” `run_kernel_native` would
+  # silently produce all-zero positions, sizes, and colors (which is why the v2
+  # path produced a black screen). Pre-compute the @-ivar symbol for each member
+  # once so the per-call accessors don't rebuild `:"@#{m}"` on every read/write â€”
+  # that interpolation was a real cost on hot iteration paths.
+  def self.define_component_accessors(klass, members)
+    ivars = members.map { |m| :"@#{m}" }
+    klass.class_eval do
+      define_method(:initialize) do |*args|
+        i = 0
+        len = ivars.length
+        while i < len
+          instance_variable_set(ivars[i], args[i])
+          i += 1
+        end
+      end
+      members.each_with_index do |m, idx|
+        ivar = ivars[idx]
+        define_method(m)       { instance_variable_get(ivar) }
+        define_method("#{m}=") { |v| instance_variable_set(ivar, v) }
+      end
+      define_method(:members) { members }
+      define_method(:values)  { ivars.map { |iv| instance_variable_get(iv) } }
+      define_method(:[])      { |key| instance_variable_get(:"@#{key}") }
+      define_method(:[]=)     { |key, v| instance_variable_set(:"@#{key}", v) }
+    end
+    klass
   end
 
-  # Build a tag component — a zero-field marker class with an introspectable
-  # `tag_name` reader. Prefer this over `Struct.new("Player")` because the
-  # name is recorded on the class itself, so you can ask `Player.tag_name`.
+  # Returns an anonymous class whose fields live as @-ivars (see
+  # `define_component_accessors`). Good for one-liners with no methods:
+  #
+  #   Position = Drecs.component(:x, :y)
+  #
+  # Like `Struct.new`, an optional block is class_eval'd on the result, so you
+  # can add methods or override the default initializer inline:
+  #
+  #   Velocity = Drecs.component(:dx, :dy) do
+  #     def speed = Math.sqrt(dx * dx + dy * dy)
+  #   end
+  #
+  # When you need real class constants (e.g. `Tile::TILE_FLOOR`) or just prefer
+  # a normal, named class body, use the `Drecs::Component` mixin instead.
+  def self.component(*members, &block)
+    klass = define_component_accessors(Class.new, members)
+    klass.class_eval(&block) if block
+    klass
+  end
+
+  # Mixin that turns an ordinary, named class into a drecs component. Use this
+  # when you want methods and/or real class constants without the
+  # `X = Drecs.component(...)` + `class X` reopen dance:
+  #
+  #   class Velocity
+  #     include Drecs::Component
+  #     component :dx, :dy
+  #
+  #     def moving? = dx != 0 || dy != 0
+  #     def speed   = Math.sqrt(dx * dx + dy * dy)
+  #   end
+  #
+  #   class Tile
+  #     include Drecs::Component
+  #     component :type
+  #     TILE_FLOOR = 0   # a real class constant: Tile::TILE_FLOOR works
+  #   end
+  #
+  # The default initializer assigns members positionally; define your own
+  # `initialize` after the `component` call to add defaults.
+  module Component
+    def self.included(base)
+      base.extend(ClassMethods)
+    end
+
+    module ClassMethods
+      def component(*members)
+        Drecs.define_component_accessors(self, members)
+        members
+      end
+    end
+  end
+
+  # Build a tag component â€” a zero-field marker class with an introspectable
+  # `tag_name` reader, available on both the class and its instances:
   #
   #   Player = Drecs.tag(:player)
+  #   Player.tag_name       # => :player
+  #   Player.new.tag_name   # => :player
   #   Enemy  = Drecs.tag(:enemy)
-  #   Bullet = Drecs.tag("Bullet")     # also OK — string is used verbatim
-  #   Anonymous = Drecs.tag            # returns an anonymous class; assign to a constant yourself
+  #   Bullet = Drecs.tag("Bullet")     # also OK â€” string is used verbatim
+  #   Anonymous = Drecs.tag            # tag_name is nil; assign to a constant yourself
   #
-  # Symbol names get capitalized before being handed to `Struct.new` (Struct
-  # requires the name to start with an uppercase letter). The original symbol
-  # is preserved on `tag_name`, so `:player` survives the round-trip.
+  # Tags are plain classes with the standard drecs component API (`members`,
+  # `values`, `[]`), NOT `Struct` subclasses: no global `Struct::Player`
+  # constant is defined (so two `Drecs.tag(:player)` calls can't collide or
+  # emit redefinition warnings), instances carry zero fields, and the class
+  # is safe to reference from native systems (which reject Struct-based
+  # components).
   def self.tag(name = nil)
-    if name
-      str = name.to_s
-      struct_name = str[0].upcase + str[1..-1]
-      klass = Struct.new(struct_name, :tag_name)
-      klass.send(:define_method, :tag_name) { name }
-      klass
-    else
-      Struct.new(nil, :tag_name)
+    klass = define_component_accessors(Class.new, [])
+    klass.define_singleton_method(:tag_name) { name }
+    klass.send(:define_method, :tag_name) { name }
+    klass
+  end
+
+  # Builds a single, persistent renderer object that draws every entity
+  # matching a set of components straight out of drecs's archetype storage â€”
+  # no per-entity sprite object, no shadow "renderables" hash, no per-frame
+  # allocation. Push the returned object into `args.outputs.static_sprites`
+  # ONCE; its `draw_override` walks `each_chunk` every frame and emits one
+  # positional `ffi.draw_sprite_*` call per entity.
+  #
+  # This is the bridge between drecs's Structure-of-Arrays storage (where a
+  # renderable's data lives across SEPARATE components) and DragonRuby's
+  # renderer (which wants all sprite attributes for one draw call): the
+  # mapping says which component+field each sprite attribute is pulled from,
+  # and the positional FFI draw call assembles them â€” so you keep granular
+  # components (Position, Size, Color, ...) and never author a fat "Sprite".
+  #
+  #   renderer = Drecs.sprite_renderer(world,
+  #     x: [Position, :x], y: [Position, :y],
+  #     w: [Size, :w],     h: [Size, :h],
+  #     path: [Sprite, :path],
+  #     r: [Color, :r], g: [Color, :g], b: [Color, :b], a: [Color, :a],
+  #     flip_horizontally: [Facing, :flipped])
+  #   args.outputs.static_sprites << renderer   # once, ever
+  #
+  # Each mapping value is one of:
+  #   * `[ComponentClass, :field]` â€” read `component.field` per entity
+  #   * `[ComponentClass, ->(c){ ... }]` â€” computed from one component
+  #   * any other value â€” a constant applied to every entity (e.g.
+  #     `path: 'sprites/star.png'`, `angle: 0`, `flip_horizontally: false`)
+  #   * omitted â€” DragonRuby's default for that attribute (see DEFAULTS)
+  #
+  # `with:` / `without:` / `any:` are forwarded to `each_chunk` so you can
+  # gate which entities render (e.g. `with: Visible`, `without: Hidden`)
+  # without those tag components feeding any sprite attribute.
+  def self.sprite_renderer(world, mapping = {}, with: nil, without: nil, any: nil, variant: 6)
+    SpriteRenderer.new(world, mapping, with: with, without: without, any: any, variant: variant)
+  end
+
+  class SpriteRenderer
+    # Canonical attribute order, matching `ffi_draw.draw_sprite_6`'s positional
+    # argument list (a superset of draw_sprite_3/4/5). `:a` is alpha; `:r/:g/:b`
+    # are the saturation/tint channels (255 = unmodified for an image sprite,
+    # or the fill color for the built-in white `:solid` path).
+    ATTRS = [
+      :x, :y, :w, :h, :path, :angle,
+      :a, :r, :g, :b,
+      :tile_x, :tile_y, :tile_w, :tile_h,
+      :flip_horizontally, :flip_vertically,
+      :angle_anchor_x, :angle_anchor_y,
+      :source_x, :source_y, :source_w, :source_h,
+      :blendmode_enum,
+      :anchor_x, :anchor_y,
+      :scale_quality_enum
+    ].freeze
+
+    # How many leading ATTRS each draw_sprite_N variant consumes.
+    VARIANT_ARGC = { 3 => 22, 4 => 23, 5 => 25, 6 => 26 }.freeze
+
+    # Sensible defaults for attributes the caller doesn't map. `path` must be
+    # non-nil for anything to render, so it defaults to the built-in white
+    # `:solid` pixel (tint it via r/g/b for solid-color fills). Everything else
+    # left as nil falls through to DragonRuby's own per-attribute default.
+    DEFAULTS = {
+      path: :solid,
+      angle: 0,
+      a: 255, r: 255, g: 255, b: 255,
+      flip_horizontally: false, flip_vertically: false
+    }.freeze
+
+    attr_reader :components
+
+    def initialize(world, mapping, with: nil, without: nil, any: nil, variant: 6)
+      @world = world
+      @without = without
+      @any = any
+
+      argc = VARIANT_ARGC[variant]
+      raise ArgumentError, "variant must be one of #{VARIANT_ARGC.keys.inspect}" unless argc
+      @draw_method = "draw_sprite_#{variant}".to_sym
+      @argc = argc
+
+      # Discover the components referenced by accessor mappings, in first-seen
+      # order â€” this is the iteration signature handed to each_chunk.
+      comps = []
+      ATTRS.each do |attr|
+        v = mapping[attr]
+        next unless accessor?(v)
+        comps << v[0] unless comps.include?(v[0])
+      end
+
+      # `with:` components participate in entity selection but feed no attribute.
+      # They're appended AFTER the accessor components so accessor store indices
+      # (computed against `comps`) stay valid in the each_chunk yield order.
+      with_only = Array(with).reject { |k| comps.include?(k) }
+      @components = comps
+      @iter_components = comps + with_only
+
+      if @iter_components.empty?
+        raise ArgumentError, "sprite_renderer needs at least one [Component, :field] mapping or a `with:` component to know which entities to draw"
+      end
+
+      # Precompute, per ATTR slot (only up to @argc), how to resolve its value:
+      #   @is_accessor[slot]  -> true if read from a component
+      #   @store_idx[slot]    -> which each_chunk store array to read
+      #   @getter[slot]       -> Symbol (sent to component) or Proc (called with it)
+      #   @is_proc[slot]      -> getter is a Proc
+      #   @const[slot]        -> constant/default value when not an accessor
+      @is_accessor = Array.new(@argc, false)
+      @store_idx   = Array.new(@argc)
+      @getter      = Array.new(@argc)
+      @is_proc     = Array.new(@argc, false)
+      @const       = Array.new(@argc)
+
+      slot = 0
+      while slot < @argc
+        attr = ATTRS[slot]
+        if mapping.key?(attr) && accessor?(mapping[attr])
+          v = mapping[attr]
+          @is_accessor[slot] = true
+          @store_idx[slot]   = comps.index(v[0])
+          getter             = v[1]
+          @is_proc[slot]     = !getter.is_a?(Symbol) && getter.respond_to?(:call)
+          @getter[slot]      = getter
+        elsif mapping.key?(attr)
+          @const[slot] = mapping[attr]
+        else
+          @const[slot] = DEFAULTS[attr]
+        end
+        slot += 1
+      end
+
+      # Reused argument buffer â€” refilled per entity, never reallocated.
+      @args = Array.new(@argc)
+    end
+
+    # Returns true for an accessor mapping of the form [ComponentClass, :field]
+    # or [ComponentClass, proc]. Sprite attribute constants are always scalars
+    # (numbers / symbols / strings / booleans), so a 2-element [Class, Symbol|callable]
+    # array is unambiguously an accessor.
+    def accessor?(v)
+      v.is_a?(Array) && v.length == 2 && v[0].is_a?(Class) &&
+        (v[1].is_a?(Symbol) || v[1].respond_to?(:call))
+    end
+
+    # Invoked by DragonRuby for each object in outputs that responds to it.
+    # Walks the matching archetype chunks and emits one positional sprite draw
+    # per entity, pulling each attribute from its mapped component.
+    def draw_override(ffi)
+      args        = @args
+      argc        = @argc
+      is_accessor = @is_accessor
+      store_idx   = @store_idx
+      getter      = @getter
+      is_proc     = @is_proc
+      const       = @const
+      draw_method = @draw_method
+
+      @world.each_chunk(*@iter_components, with: nil, without: @without, any: @any) do |ids, *stores|
+        row = 0
+        n = ids.length
+        while row < n
+          slot = 0
+          while slot < argc
+            if is_accessor[slot]
+              comp = stores[store_idx[slot]][row]
+              if is_proc[slot]
+                args[slot] = getter[slot].call(comp)
+              else
+                args[slot] = comp.send(getter[slot])
+              end
+            else
+              args[slot] = const[slot]
+            end
+            slot += 1
+          end
+          ffi.send(draw_method, *args)
+          row += 1
+        end
+      end
     end
   end
 
   Name = Struct.new(:value)
-
-  module UI
-    Val = Struct.new(:unit, :value)
-    UiNode = Struct.new(:name)
-    UiLayout = Struct.new(:x, :y, :w, :h, :layout, :padding, :gap, :align, :justify)
-    UiStyle = Struct.new(:bg, :border, :border_thickness, :text_color)
-    UiText = Struct.new(:text, :size_enum)
-    UiRect = Struct.new(:x, :y, :w, :h)
-    UiInput = Struct.new(:hovered, :pressed, :on_click)
-    UiScroll = Struct.new(:x, :y)
-    UiOverflow = Struct.new(:axis)
-    UiScrollRange = Struct.new(:min_x, :max_x, :min_y, :max_y)
-    UiClip = Struct.new(:x, :y, :w, :h)
-    UiInteraction = Struct.new(:state)
-    UiZIndex = Struct.new(:value)
-    UiClickEvent = Struct.new(:entity_id)
-
-    DEFAULT_LAYOUT = UiLayout.new(0, 0, 0, 0, :column, 0, 4, :start, :start)
-
-    def self.px(value)
-      Val.new(:px, value)
-    end
-
-    def self.percent(value)
-      Val.new(:percent, value)
-    end
-
-    def self.auto
-      Val.new(:auto, nil)
-    end
-
-    def self.install(world)
-      world.add_system(:ui_layout, system: LayoutSystem.new)
-      world.add_system(:ui_input, after: :ui_layout, system: InputSystem.new)
-      world.add_system(:ui_render, after: :ui_input, system: RenderSystem.new)
-    end
-
-    def self.build(world, &block)
-      builder = UiBuilder.new(world)
-      return builder unless block
-      block.call(builder)
-      builder
-    end
-
-    class UiBuilder
-      def initialize(world)
-        @world = world
-        @stack = []
-      end
-
-      def root(name: "root", **layout, &block)
-        node(name: name, **layout, &block)
-      end
-
-      def panel(name: "panel", bg: nil, border: nil, border_thickness: 1, **layout, &block)
-        node(name: name, style: UiStyle.new(bg, border, border_thickness, nil), **layout, &block)
-      end
-
-      def text(value, name: "text", size: 2, **layout)
-        node(name: name, text: UiText.new(value, size), **layout)
-      end
-
-      def button(label, name: "button", bg: nil, border: nil, border_thickness: 1, size: 2, **layout, &on_click)
-        node(name: name,
-             text: UiText.new(label, size),
-             style: UiStyle.new(bg, border, border_thickness, nil),
-             input: UiInput.new(false, false, on_click),
-             **layout)
-      end
-
-      def node(name: "node", x: 0, y: 0, w: 0, h: 0, layout: :column, padding: 0, gap: 0,
-               align: :start, justify: :start, style: nil, text: nil, input: nil, scroll: nil,
-               overflow: nil, z: nil, &block)
-        components = [UiNode.new(name), UiLayout.new(x, y, w, h, layout, padding, gap, align, justify)]
-        components << style if style
-        components << text if text
-        components << input if input
-        components << scroll if scroll
-        components << overflow if overflow
-        components << UiZIndex.new(z) if z
-
-        entity_id = @world.spawn(*components)
-        @world.set_parent(entity_id, @stack.last) if @stack.any?
-
-        if block
-          @stack << entity_id
-          block.call(self)
-          @stack.pop
-        end
-
-        entity_id
-      end
-    end
-
-    class LayoutSystem
-      def call(world, args)
-        roots = []
-        world.each_entity(UiNode, UiLayout) do |entity_id, _node, _layout|
-          roots << entity_id unless world.parent_of(entity_id)
-        end
-
-        roots.each do |root_id|
-          layout = world.get_component(root_id, UiLayout) || DEFAULT_LAYOUT
-          root_w = resolve_length(layout.w, args.grid.w, args.grid.w)
-          root_h = resolve_length(layout.h, args.grid.h, args.grid.h)
-          root_x = resolve_length(layout.x, args.grid.w, layout.x.to_i)
-          root_y = resolve_length(layout.y, args.grid.h, layout.y.to_i)
-          rect = UiRect.new(root_x, root_y, root_w, root_h)
-          world.set_component(root_id, rect)
-          layout_children(world, root_id, rect, layout)
-        end
-      end
-
-      private
-
-      def layout_children(world, parent_id, parent_rect, parent_layout)
-        children = world.children_of(parent_id)
-        return if children.empty?
-
-        padding = parent_layout.padding || 0
-        gap = parent_layout.gap || 0
-        layout_mode = parent_layout.layout || :column
-        align = parent_layout.align || :start
-        justify = parent_layout.justify || :start
-        scroll = world.get_component(parent_id, UiScroll)
-        overflow = world.get_component(parent_id, UiOverflow)
-        scroll_x = scroll&.x.to_f
-        scroll_y = scroll&.y.to_f
-        scroll_axis = overflow&.axis || :y
-
-        content_x = parent_rect.x + padding
-        content_y = parent_rect.y + padding
-        content_w = parent_rect.w - padding * 2
-        content_h = parent_rect.h - padding * 2
-
-        rows = []
-        children.each do |child_id|
-          next unless world.has_component?(child_id, UiNode)
-
-          child_layout = world.get_component(child_id, UiLayout) || DEFAULT_LAYOUT
-          child_w = resolve_length(child_layout.w, content_w, content_w)
-          child_h = resolve_length(child_layout.h, content_h, estimate_height(world, child_id))
-          offset_x = resolve_length(child_layout.x, content_w, child_layout.x.to_i)
-          offset_y = resolve_length(child_layout.y, content_h, child_layout.y.to_i)
-
-          rows << {
-            id: child_id,
-            layout: child_layout,
-            w: child_w,
-            h: child_h,
-            offset_x: offset_x,
-            offset_y: offset_y
-          }
-        end
-
-        if layout_mode == :row
-          total_main = rows.sum { |row| row[:w] } + gap * [rows.length - 1, 0].max
-          extra = content_w - total_main
-          extra = 0 if extra.negative?
-          cursor_x = content_x + justify_offset(justify, extra)
-          cursor_y = content_y + content_h
-          if scroll
-            max_scroll_x = [total_main - content_w, 0].max
-            world.set_component(parent_id, UiScrollRange.new(0, max_scroll_x, 0, 0))
-            world.set_component(parent_id, UiClip.new(content_x, content_y, content_w, content_h))
-          end
-        else
-          total_main = rows.sum { |row| row[:h] } + gap * [rows.length - 1, 0].max
-          extra = content_h - total_main
-          extra = 0 if extra.negative?
-          cursor_x = content_x
-          cursor_y = content_y + content_h - justify_offset(justify, extra)
-          if scroll
-            max_scroll_y = [total_main - content_h, 0].max
-            world.set_component(parent_id, UiScrollRange.new(0, 0, 0, max_scroll_y))
-            world.set_component(parent_id, UiClip.new(content_x, content_y, content_w, content_h))
-          end
-        end
-
-        rows.each do |row|
-          child_id = row[:id]
-          child_layout = row[:layout]
-          child_w = row[:w]
-          child_h = row[:h]
-          offset_x = row[:offset_x]
-          offset_y = row[:offset_y]
-
-          if layout_mode == :row
-            rect_x = cursor_x + offset_x
-            rect_y = align_cross_axis(align, content_y, content_h, child_h, offset_y)
-          else
-            rect_x = align_cross_axis(align, content_x, content_w, child_w, offset_x)
-            rect_y = cursor_y - child_h + offset_y
-          end
-
-          if scroll
-            if scroll_axis == :x || scroll_axis == :both
-              rect_x -= scroll_x
-            end
-            if scroll_axis == :y || scroll_axis == :both
-              rect_y -= scroll_y
-            end
-          end
-
-          rect = UiRect.new(rect_x, rect_y, child_w, child_h)
-          world.set_component(child_id, rect)
-
-          layout_children(world, child_id, rect, child_layout)
-
-          if layout_mode == :row
-            cursor_x += child_w + gap
-          else
-            cursor_y = rect_y - gap
-          end
-        end
-      end
-
-      def estimate_height(world, child_id)
-        text = world.get_component(child_id, UiText)
-        return 24 unless text
-        size_enum = text.size_enum || 2
-        14 + size_enum * 4
-      end
-
-      def resolve_length(value, parent_size, fallback)
-        return fallback if value.nil?
-        return fallback if value.is_a?(Val) && value.unit == :auto
-
-        if value.is_a?(Val)
-          case value.unit
-          when :percent
-            return parent_size * (value.value.to_f / 100.0)
-          when :px
-            return value.value.to_f
-          else
-            return fallback
-          end
-        end
-
-        return fallback if value.is_a?(Numeric) && value <= 0
-        value
-      end
-
-      def justify_offset(justify, extra)
-        case justify
-        when :center
-          extra / 2.0
-        when :end
-          extra
-        else
-          0
-        end
-      end
-
-      def align_cross_axis(align, start_pos, span, child_span, offset)
-        case align
-        when :center
-          start_pos + (span - child_span) / 2.0 + offset
-        when :end
-          start_pos + (span - child_span) + offset
-        else
-          start_pos + offset
-        end
-      end
-    end
-
-    class InputSystem
-      def call(world, args)
-        mouse = args.inputs.mouse
-        return unless mouse
-
-        pending_interactions = []
-        entries = []
-        world.each_entity(UiRect, UiInput) do |entity_id, rect, input|
-          z = z_index_for(world, entity_id)
-          entries << [entity_id, rect, input, z]
-        end
-
-        hovered_entry = entries
-          .select { |_id, rect, _input, _z| point_in_rect?(mouse.x, mouse.y, rect) }
-          .max_by { |id, _rect, _input, z| z_sort_key(z, id) }
-        hovered_id = hovered_entry&.first
-
-        entries.each do |entity_id, _rect, input, _z|
-          hovered = entity_id == hovered_id
-          pressed = hovered && mouse.click
-          input.hovered = hovered
-          input.pressed = pressed
-          set_interaction_state(world, entity_id, hovered, pressed, pending_interactions)
-        end
-
-        pending_interactions.each do |entity_id, state|
-          world.add_component(entity_id, UiInteraction.new(state))
-        end
-
-        if hovered_entry && mouse.click
-          entity_id, _rect, input, _z = hovered_entry
-          world.send_event(UiClickEvent.new(entity_id))
-          input.on_click.call(entity_id, world) if input.on_click
-        end
-
-        wheel = mouse.respond_to?(:wheel) ? mouse.wheel : nil
-        wheel_y = wheel&.y.to_f
-        if wheel_y != 0
-          scroll_entries = []
-          world.each_entity(UiRect, UiScroll) do |entity_id, rect, scroll|
-            scroll_entries << [entity_id, rect, scroll, z_index_for(world, entity_id)]
-          end
-
-          target = scroll_entries
-            .select { |_id, rect, _scroll, _z| point_in_rect?(mouse.x, mouse.y, rect) }
-            .max_by { |id, _rect, _scroll, z| z_sort_key(z, id) }
-
-          if target
-            entity_id, _rect, scroll, _z = target
-            range = world.get_component(entity_id, UiScrollRange)
-            axis = (world.get_component(entity_id, UiOverflow)&.axis) || :y
-            if axis == :y || axis == :both
-              scroll.y = scroll.y.to_f - wheel_y * 20
-              if range
-                scroll.y = scroll.y.clamp(range.min_y, range.max_y)
-              end
-            end
-            if axis == :x || axis == :both
-              scroll.x = scroll.x.to_f - wheel_y * 20
-              if range
-                scroll.x = scroll.x.clamp(range.min_x, range.max_x)
-              end
-            end
-          end
-        end
-      end
-
-      private
-
-      def set_interaction_state(world, entity_id, hovered, pressed, pending)
-        interaction = world.get_component(entity_id, UiInteraction)
-        state = if pressed
-          :pressed
-        elsif hovered
-          :hovered
-        else
-          :none
-        end
-
-        if interaction
-          interaction.state = state
-        else
-          pending << [entity_id, state]
-        end
-      end
-
-      def point_in_rect?(x, y, rect)
-        x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
-      end
-
-      def z_index_for(world, entity_id)
-        z = world.get_component(entity_id, UiZIndex)
-        z ? z.value.to_i : 0
-      end
-
-      def z_sort_key(z, entity_id)
-        (z.to_i * 1_000_000_000) + entity_id.to_i
-      end
-
-      def clip_rect_for(world, entity_id)
-        clip = nil
-        current = entity_id
-        while (parent = world.parent_of(current))
-          current = parent
-          parent_clip = world.get_component(parent, UiClip)
-          next unless parent_clip
-          clip = clip ? intersect_rect(clip, parent_clip) : parent_clip
-          break unless clip
-        end
-        clip
-      end
-
-      def intersect_rect(rect, clip)
-        x1 = [rect.x, clip.x].max
-        y1 = [rect.y, clip.y].max
-        x2 = [rect.x + rect.w, clip.x + clip.w].min
-        y2 = [rect.y + rect.h, clip.y + clip.h].min
-        w = x2 - x1
-        h = y2 - y1
-        return nil if w <= 0 || h <= 0
-        UiRect.new(x1, y1, w, h)
-      end
-    end
-
-    class RenderSystem
-      def call(world, args)
-        style_entries = []
-        world.each_entity(UiRect, UiStyle) do |entity_id, rect, style|
-          style_entries << [entity_id, rect, style, z_index_for(world, entity_id)]
-        end
-
-        style_entries.sort_by { |entity_id, _rect, _style, z| [z, entity_id] }.each do |_entity_id, rect, style, _z|
-          clip = clip_rect_for(world, _entity_id)
-          clipped = clip ? intersect_rect(rect, clip) : rect
-          next unless clipped
-
-          if style&.bg
-            args.outputs.solids << {
-              x: clipped.x, y: clipped.y, w: clipped.w, h: clipped.h,
-              r: style.bg[:r], g: style.bg[:g], b: style.bg[:b], a: style.bg[:a] || 255
-            }
-          end
-
-          if style&.border
-            args.outputs.borders << {
-              x: clipped.x, y: clipped.y, w: clipped.w, h: clipped.h,
-              r: style.border[:r], g: style.border[:g], b: style.border[:b], a: style.border[:a] || 255
-            }
-          end
-        end
-
-        text_entries = []
-        world.each_entity(UiRect, UiText) do |entity_id, rect, text|
-          text_entries << [entity_id, rect, text, z_index_for(world, entity_id)]
-        end
-
-        text_entries.sort_by { |entity_id, _rect, _text, z| [z, entity_id] }.each do |_entity_id, rect, text, _z|
-          clip = clip_rect_for(world, _entity_id)
-          next if clip && !intersect_rect(rect, clip)
-          color = { r: 255, g: 255, b: 255, a: 255 }
-          args.outputs.labels << {
-            x: rect.x + 6,
-            y: rect.y + rect.h - 6,
-            text: text.text.to_s,
-            size_enum: text.size_enum || 2,
-            r: color[:r], g: color[:g], b: color[:b], a: color[:a]
-          }
-        end
-      end
-
-      private
-
-      def z_index_for(world, entity_id)
-        z = world.get_component(entity_id, UiZIndex)
-        z ? z.value.to_i : 0
-      end
-
-      def clip_rect_for(world, entity_id)
-        clip = nil
-        current = entity_id
-        while (parent = world.parent_of(current))
-          current = parent
-          parent_clip = world.get_component(parent, UiClip)
-          next unless parent_clip
-          clip = clip ? intersect_rect(clip, parent_clip) : parent_clip
-          break unless clip
-        end
-        clip
-      end
-
-      def intersect_rect(rect, clip)
-        x1 = [rect.x, clip.x].max
-        y1 = [rect.y, clip.y].max
-        x2 = [rect.x + rect.w, clip.x + clip.w].min
-        y2 = [rect.y + rect.h, clip.y + clip.h].min
-        w = x2 - x1
-        h = y2 - y1
-        return nil if w <= 0 || h <= 0
-        UiRect.new(x1, y1, w, h)
-      end
-    end
-  end
 
   class Bundle
     include SignatureHelper
@@ -620,591 +433,6 @@ module Drecs
       @queue = []
       queue.each { |cmd| cmd.call(world) }
       nil
-    end
-  end
-
-  class DebugOverlay
-    DEFAULT_MAX_LINES = 24
-    PANEL_PADDING = 12
-    LIST_ROW_HEIGHT = 20
-    LEFT_PANEL_WIDTH = 320
-    TOP_BAR_HEIGHT = 40
-    COMPONENT_ROW_COUNT = 28
-    SYSTEM_ROW_COUNT = 12
-
-    def initialize(world, toggle_key: :f1)
-      @world = world
-      @toggle_key = toggle_key
-      @enabled = false
-      @entity_index = 0
-      @selected_entity_id = nil
-      @scroll_offset = 0
-      @filter_text = ""
-      @filter_active = false
-      @components_expanded = true
-      @systems_expanded = true
-      @group_expanded = {}
-      @edit_target = nil
-      @edit_buffer = ""
-      @ui_world = nil
-      @ui_built = false
-      @ui_row_data = []
-      @ui_entity_row_ids = []
-      @ui_entity_row_text_ids = []
-      @ui_component_row_ids = []
-      @ui_component_text_ids = []
-      @ui_system_row_ids = []
-      @ui_system_text_ids = []
-      @ui_title_text_id = nil
-      @ui_stats_text_id = nil
-      @ui_filter_text_id = nil
-      @ui_entity_title_id = nil
-      @ui_parent_text_id = nil
-      @ui_children_text_id = nil
-      @ui_components_header_id = nil
-      @ui_systems_header_id = nil
-      @rows_cache = nil
-      @rows_cache_key = nil
-    end
-
-    def enabled?
-      @enabled
-    end
-
-    def tick(args)
-      # Be permissive about nil/incomplete args — tests and headless contexts
-      # may pass `world.tick(nil)`. The overlay is a developer convenience,
-      # so silently no-op rather than crashing the game.
-      return unless args && args.respond_to?(:inputs) && args.inputs
-
-      keyboard = args.inputs.keyboard
-      if key_pressed?(keyboard, @toggle_key)
-        @enabled = !@enabled
-      end
-
-      return unless @enabled
-
-      handle_keyboard_input(args)
-      handle_mouse_input(args)
-
-      render(args)
-    end
-
-    private
-
-    def handle_keyboard_input(args)
-      keyboard = args.inputs.keyboard
-      if keyboard.key_down.up
-        @entity_index -= 1
-      elsif keyboard.key_down.down
-        @entity_index += 1
-      end
-      entities = filtered_entity_ids
-      @entity_index = 0 if @entity_index.negative?
-      @entity_index = entities.length - 1 if @entity_index >= entities.length
-      @selected_entity_id = entities[@entity_index] if entities[@entity_index]
-      if @edit_target
-        if keyboard.key_down.backspace && !@edit_buffer.empty?
-          @edit_buffer = @edit_buffer[0..-2]
-        elsif keyboard.key_down.enter
-          commit_edit
-        elsif keyboard.key_down.escape
-          clear_edit
-        else
-          if (text = args.inputs.text)
-            text = text.join if text.is_a?(Array)
-            @edit_buffer += text if text && !text.empty?
-          end
-        end
-      else
-        if keyboard.key_down.backspace && @filter_active && !@filter_text.empty?
-          @filter_text = @filter_text[0..-2]
-        end
-        if @filter_active && (text = args.inputs.text)
-          text = text.join if text.is_a?(Array)
-          @filter_text += text if text && !text.empty?
-        end
-      end
-    end
-
-    def handle_mouse_input(args)
-      mouse = args.inputs.mouse
-      return unless mouse
-
-      if (wheel_y = mouse_wheel_y(mouse))
-        rect = entity_list_rect(args)
-        if point_in_rect?(mouse.x, mouse.y, rect)
-          @scroll_offset -= wheel_y * LIST_ROW_HEIGHT
-        end
-      end
-    end
-
-    def key_pressed?(keyboard, key)
-      return keyboard.key_down.f1 if key == :f1
-      return keyboard.key_down.f2 if key == :f2
-      return keyboard.key_down.f3 if key == :f3
-      return keyboard.key_down.f4 if key == :f4
-      return keyboard.key_down.f5 if key == :f5
-      return keyboard.key_down.f6 if key == :f6
-      return keyboard.key_down.f7 if key == :f7
-      return keyboard.key_down.f8 if key == :f8
-      return keyboard.key_down.f9 if key == :f9
-      return keyboard.key_down.f10 if key == :f10
-      return keyboard.key_down.f11 if key == :f11
-      return keyboard.key_down.f12 if key == :f12
-      false
-    end
-
-    def render(args)
-      ui = ui_world
-      build_ui_once(ui, args) unless @ui_built
-      update_ui(args)
-      ui.tick(args)
-    end
-
-    def build_ui_once(ui, args)
-      root = ui.spawn(
-        UI::UiNode.new("root"),
-        UI::UiLayout.new(0, 0, args.grid.w, args.grid.h, :column, PANEL_PADDING, 8, :start, :start)
-      )
-
-      top_bar = ui.spawn(
-        UI::UiNode.new("top_bar"),
-        UI::UiLayout.new(0, 0, args.grid.w - PANEL_PADDING * 2, TOP_BAR_HEIGHT, :row, 0, 16, :start, :start),
-        UI::UiStyle.new({ r: 10, g: 10, b: 20, a: 220 }, { r: 40, g: 40, b: 60 }, 1, nil)
-      )
-      ui.set_parent(top_bar, root)
-
-      @ui_title_text_id = ui.spawn(
-        UI::UiNode.new("title"),
-        UI::UiLayout.new(0, 0, 0, TOP_BAR_HEIGHT, :row, 0, 0, :start, :start),
-        UI::UiText.new("Drecs Debug Overlay (#{@toggle_key.to_s.upcase} to toggle)", 3)
-      )
-      ui.set_parent(@ui_title_text_id, top_bar)
-
-      @ui_stats_text_id = ui.spawn(
-        UI::UiNode.new("stats"),
-        UI::UiLayout.new(0, 0, 0, TOP_BAR_HEIGHT, :row, 0, 0, :start, :start),
-        UI::UiText.new("", 2)
-      )
-      ui.set_parent(@ui_stats_text_id, top_bar)
-
-      content_h = args.grid.h - TOP_BAR_HEIGHT - PANEL_PADDING * 2 - 8
-      content_w = args.grid.w - PANEL_PADDING * 2
-
-      content = ui.spawn(
-        UI::UiNode.new("content"),
-        UI::UiLayout.new(0, 0, content_w, content_h, :row, 0, 12, :start, :start)
-      )
-      ui.set_parent(content, root)
-
-      left_panel = ui.spawn(
-        UI::UiNode.new("left_panel"),
-        UI::UiLayout.new(0, 0, LEFT_PANEL_WIDTH, content_h, :column, 8, 6, :start, :start),
-        UI::UiStyle.new({ r: 10, g: 10, b: 20, a: 220 }, { r: 30, g: 30, b: 50 }, 1, nil)
-      )
-      ui.set_parent(left_panel, content)
-
-      right_panel = ui.spawn(
-        UI::UiNode.new("right_panel"),
-        UI::UiLayout.new(0, 0, content_w - LEFT_PANEL_WIDTH - 12, content_h, :column, 8, 6, :start, :start),
-        UI::UiStyle.new({ r: 15, g: 15, b: 25, a: 220 }, { r: 40, g: 40, b: 60 }, 1, nil)
-      )
-      ui.set_parent(right_panel, content)
-
-      build_filter(ui, left_panel)
-      build_entity_list(ui, left_panel, content_h)
-      build_entity_details(ui, right_panel)
-
-      @ui_built = true
-    end
-
-    def build_filter(ui, parent)
-      filter = ui.spawn(
-        UI::UiNode.new("filter"),
-        UI::UiLayout.new(0, 0, LEFT_PANEL_WIDTH - 16, 24, :row, 0, 0, :start, :start),
-        UI::UiStyle.new({ r: 30, g: 30, b: 50, a: 240 }, { r: 60, g: 60, b: 80 }, 1, nil),
-        UI::UiText.new("", 2),
-        UI::UiInput.new(false, false, ->(_id, _w) { @filter_active = true })
-      )
-      ui.set_parent(filter, parent)
-      @ui_filter_text_id = filter
-    end
-
-    def build_entity_list(ui, parent, content_h)
-      list_height = content_h - TOP_BAR_HEIGHT - PANEL_PADDING
-      list_container = ui.spawn(
-        UI::UiNode.new("entity_list"),
-        UI::UiLayout.new(0, 0, LEFT_PANEL_WIDTH - 16, list_height, :column, 0, 0, :start, :start)
-      )
-      ui.set_parent(list_container, parent)
-      DEFAULT_MAX_LINES.times do |idx|
-        row_entity = ui.spawn(
-          UI::UiNode.new("row_#{idx}"),
-          UI::UiLayout.new(0, 0, LEFT_PANEL_WIDTH - 16, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
-          UI::UiText.new("", 2),
-          UI::UiInput.new(false, false, ->(_id, _w) { handle_row_click(idx) })
-        )
-        ui.set_parent(row_entity, list_container)
-        @ui_entity_row_ids << row_entity
-        @ui_entity_row_text_ids << row_entity
-      end
-    end
-
-    def build_entity_details(ui, parent)
-      entities = filtered_entity_ids
-      return if entities.empty?
-
-      selected_id = @selected_entity_id || entities[@entity_index]
-      @ui_entity_title_id = ui.spawn(
-        UI::UiNode.new("entity_title"),
-        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
-        UI::UiText.new("", 3)
-      )
-      ui.set_parent(@ui_entity_title_id, parent)
-
-      parent_id = @world.parent_of(selected_id)
-      @ui_parent_text_id = ui.spawn(
-        UI::UiNode.new("entity_parent"),
-        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
-        UI::UiText.new("", 2)
-      )
-      ui.set_parent(@ui_parent_text_id, parent)
-
-      children = @world.children_of(selected_id).join(', ')
-      @ui_children_text_id = ui.spawn(
-        UI::UiNode.new("entity_children"),
-        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
-        UI::UiText.new("", 2)
-      )
-      ui.set_parent(@ui_children_text_id, parent)
-
-      @ui_components_header_id = ui.spawn(
-        UI::UiNode.new("components_header"),
-        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
-        UI::UiText.new("", 3),
-        UI::UiInput.new(false, false, ->(_id, _w) { @components_expanded = !@components_expanded })
-      )
-      ui.set_parent(@ui_components_header_id, parent)
-
-      COMPONENT_ROW_COUNT.times do |idx|
-        row = ui.spawn(
-          UI::UiNode.new("component_row_#{idx}"),
-          UI::UiLayout.new(12, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
-          UI::UiText.new("", 2),
-          UI::UiInput.new(false, false, nil)
-        )
-        ui.set_parent(row, parent)
-        @ui_component_row_ids << row
-        @ui_component_text_ids << row
-      end
-
-      @ui_systems_header_id = ui.spawn(
-        UI::UiNode.new("systems_header"),
-        UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
-        UI::UiText.new("", 3),
-        UI::UiInput.new(false, false, ->(_id, _w) { @systems_expanded = !@systems_expanded })
-      )
-      ui.set_parent(@ui_systems_header_id, parent)
-
-      SYSTEM_ROW_COUNT.times do |idx|
-        row = ui.spawn(
-          UI::UiNode.new("system_row_#{idx}"),
-          UI::UiLayout.new(0, 0, 0, LIST_ROW_HEIGHT, :row, 0, 0, :start, :start),
-          UI::UiText.new("", 2)
-        )
-        ui.set_parent(row, parent)
-        @ui_system_row_ids << row
-        @ui_system_text_ids << row
-      end
-    end
-
-    def ui_world
-      return @ui_world if @ui_world
-      @ui_world = Drecs::World.new(debug_overlay: false)
-      UI.install(@ui_world)
-      @ui_world
-    end
-
-    def update_ui(args)
-      stats_text = "Entities: #{@world.entity_count} | Archetypes: #{@world.archetype_count} | Systems: #{system_names.length}"
-      set_ui_text(@ui_stats_text_id, stats_text)
-      set_ui_text(@ui_filter_text_id, @filter_text.empty? ? "Filter components..." : @filter_text)
-      set_ui_text(@ui_components_header_id, "Components#{@components_expanded ? '' : ' (collapsed)'}")
-      set_ui_text(@ui_systems_header_id, "Systems#{@systems_expanded ? '' : ' (collapsed)'}")
-
-      entities = filtered_entity_ids
-      return if entities.empty?
-
-      selected_id = @selected_entity_id || entities[@entity_index]
-      selected_name = @world.name(selected_id)
-      title_text = selected_name ? "Entity #{selected_id} (#{selected_name})" : "Entity #{selected_id}"
-      set_ui_text(@ui_entity_title_id, title_text)
-      parent_id = @world.parent_of(selected_id)
-      set_ui_text(@ui_parent_text_id, "Parent: #{parent_id || '-'}")
-      set_ui_text(@ui_children_text_id, "Children: #{@world.children_of(selected_id).join(', ')}")
-
-      rows = cached_entity_rows(entities)
-      visible_rows = DEFAULT_MAX_LINES
-      @scroll_offset = [[@scroll_offset, 0].max, [rows.length * LIST_ROW_HEIGHT - visible_rows * LIST_ROW_HEIGHT, 0].max].min
-      first_row = (@scroll_offset / LIST_ROW_HEIGHT).floor
-
-      @ui_row_data = []
-      visible_rows.times do |i|
-        idx = first_row + i
-        row_data = rows[idx]
-        @ui_row_data << row_data
-
-        text = ""
-        if row_data
-          text = if row_data[:type] == :group
-            "#{row_data[:expanded] ? '▼' : '▶'} #{row_data[:label]} (#{row_data[:count]})"
-          else
-            marker = row_data[:id] == (@selected_entity_id || entities[@entity_index]) ? '>' : ' '
-            name_suffix = row_data[:name] ? " - #{row_data[:name]}" : ""
-            "#{marker} #{row_data[:id]}#{name_suffix}"
-          end
-        end
-        set_ui_text(@ui_entity_row_text_ids[i], text)
-      end
-
-      component_rows = []
-      if @components_expanded
-        comps = @world.components_for(selected_id) || {}
-        comps.each do |klass, component|
-          component_rows << { text: format_component_key(klass), editable: nil }
-          fields = component_fields(component)
-          fields.each do |field, value|
-            editing = editing_field?(selected_id, klass, field)
-            display_value = format_field_value(value)
-            text = editing ? "#{field}: [#{@edit_buffer}]" : "#{field}: #{display_value}"
-            component_rows << { text: "  #{text}", editable: { entity_id: selected_id, comp_key: klass, field: field, value: value } }
-          end
-        end
-      end
-
-      COMPONENT_ROW_COUNT.times do |i|
-        row_data = component_rows[i]
-        set_ui_text(@ui_component_text_ids[i], row_data ? row_data[:text] : "")
-        input = @ui_world.get_component(@ui_component_row_ids[i], UI::UiInput)
-        if input
-          input.on_click = row_data && row_data[:editable] ? ->(_id, _w) { start_edit(row_data[:editable]) } : nil
-        end
-      end
-
-      systems = @systems_expanded ? system_names : []
-      SYSTEM_ROW_COUNT.times do |i|
-        set_ui_text(@ui_system_text_ids[i], systems[i] || "")
-      end
-    end
-
-    def set_ui_text(entity_id, text)
-      return unless entity_id
-      comp = @ui_world.get_component(entity_id, UI::UiText)
-      return unless comp
-      comp.text = text
-    end
-
-    def cached_entity_rows(entities)
-      cache_key = [@world.entity_count, @world.archetype_count, @filter_text, @group_expanded.hash]
-      if @rows_cache_key != cache_key
-        @rows_cache = build_entity_rows(entities)
-        @rows_cache_key = cache_key
-      end
-      @rows_cache || []
-    end
-
-    def handle_row_click(index)
-      row = @ui_row_data[index]
-      return unless row
-      if row[:type] == :group
-        @group_expanded[row[:key]] = !row[:expanded]
-      elsif row[:type] == :entity
-        entities = filtered_entity_ids
-        @entity_index = entities.index(row[:id]) || 0
-        @selected_entity_id = row[:id]
-      end
-    end
-
-    def format_component_key(key)
-      key.is_a?(Class) ? key.name : key.to_s
-    end
-
-    def format_field_value(value)
-      if value.is_a?(Array)
-        return "[Array size=#{value.length}]" if value.length > 20
-      elsif value.is_a?(Hash)
-        return "{Hash size=#{value.length}}" if value.length > 20
-      end
-
-      inspected = value.inspect
-      inspected.length > 60 ? "#{inspected[0, 57]}..." : inspected
-    end
-
-    def filtered_entity_ids
-      entities = @world.all_entity_ids
-      entities.sort!
-      return entities if @filter_text.empty?
-
-      entities.select do |entity_id|
-        comps = @world.components_for(entity_id) || {}
-        comps.any? { |klass, _comp| format_component_key(klass).downcase.include?(@filter_text.downcase) }
-      end
-    end
-
-    def system_names
-      names = []
-      names.concat(@world.scheduled_system_names) if @world.respond_to?(:scheduled_system_names)
-      names.concat(@world.systems.map { |sys| sys.class.name || sys.to_s })
-      names.compact.uniq
-    end
-
-    def left_panel_rect(args)
-      h = args.grid.h
-      {
-        x: PANEL_PADDING,
-        y: PANEL_PADDING,
-        w: LEFT_PANEL_WIDTH,
-        h: h - TOP_BAR_HEIGHT - PANEL_PADDING * 2
-      }
-    end
-
-    def right_panel_rect(args)
-      h = args.grid.h
-      w = args.grid.w
-      {
-        x: LEFT_PANEL_WIDTH + PANEL_PADDING * 2,
-        y: PANEL_PADDING,
-        w: w - LEFT_PANEL_WIDTH - PANEL_PADDING * 3,
-        h: h - TOP_BAR_HEIGHT - PANEL_PADDING * 2
-      }
-    end
-
-    def filter_rect(args)
-      rect = left_panel_rect(args)
-      {
-        x: rect[:x],
-        y: rect[:y] + rect[:h] - LIST_ROW_HEIGHT - PANEL_PADDING,
-        w: rect[:w],
-        h: LIST_ROW_HEIGHT + 4
-      }
-    end
-
-    def entity_list_rect(args)
-      rect = left_panel_rect(args)
-      filter = filter_rect(args)
-      {
-        x: rect[:x],
-        y: rect[:y],
-        w: rect[:w],
-        h: filter[:y] - rect[:y] - PANEL_PADDING
-      }
-    end
-
-    def point_in_rect?(x, y, rect)
-      x >= rect[:x] && x <= rect[:x] + rect[:w] && y >= rect[:y] && y <= rect[:y] + rect[:h]
-    end
-
-    def mouse_wheel_y(mouse)
-      return nil unless mouse.respond_to?(:wheel)
-      wheel = mouse.wheel
-      return nil unless wheel
-      wheel.respond_to?(:y) ? wheel.y : nil
-    end
-
-    def header_label(text, y, x = 20)
-      { x: x, y: y, text: text, size_enum: 4, r: 255, g: 255, b: 255 }
-    end
-
-    def section_label(text, y, x = 20)
-      { x: x, y: y, text: text, size_enum: 3, r: 150, g: 200, b: 255 }
-    end
-
-    def info_label(text, y, x = 20)
-      { x: x, y: y, text: text, size_enum: 2, r: 220, g: 220, b: 220 }
-    end
-
-    def build_entity_rows(entities)
-      rows = []
-      entity_set = entities.to_h { |id| [id, true] }
-
-      @world.archetypes.each_value do |archetype|
-        ids = archetype.entity_ids.select { |id| entity_set[id] }
-        next if ids.empty?
-
-        signature = archetype.component_classes
-        label = signature.map { |k| format_component_key(k) }.join(", ")
-        key = signature.join("|")
-        expanded = @group_expanded.fetch(key, true)
-
-        rows << { type: :group, key: key, label: label.empty? ? "(empty)" : label, count: ids.length, expanded: expanded }
-        if expanded
-          ids.each do |id|
-            rows << { type: :entity, id: id, group: key, name: @world.name(id) }
-          end
-        end
-      end
-
-      rows
-    end
-
-    def component_fields(component)
-      if component.is_a?(Hash)
-        component.map { |k, v| [k, v] }
-      elsif component.is_a?(Struct)
-        component.members.map { |m| [m, component[m]] }
-      else
-        [[:value, component]]
-      end
-    end
-
-    def field_for_point(x, y)
-      @field_rects.find { |field| point_in_rect?(x, y, field[:rect]) }
-    end
-
-    def start_edit(field)
-      @edit_target = field
-      @edit_buffer = field[:value].to_s
-    end
-
-    def clear_edit
-      @edit_target = nil
-      @edit_buffer = ""
-    end
-
-    def editing_field?(entity_id, comp_key, field)
-      @edit_target && @edit_target[:entity_id] == entity_id && @edit_target[:comp_key] == comp_key && @edit_target[:field] == field
-    end
-
-    def commit_edit
-      return unless @edit_target
-
-      entity_id = @edit_target[:entity_id]
-      comp_key = @edit_target[:comp_key]
-      field = @edit_target[:field]
-      original = @edit_target[:value]
-
-      value = coerce_value(@edit_buffer, original)
-      component = @world.get_component(entity_id, comp_key)
-      if component.is_a?(Hash)
-        component[field] = value
-        @world.set_component(entity_id, comp_key, component)
-      elsif component.is_a?(Struct)
-        updated = component.dup
-        updated[field] = value
-        @world.set_component(entity_id, updated)
-      end
-
-      clear_edit
-    end
-
-    def coerce_value(text, original)
-      return text.to_i if original.is_a?(Integer)
-      return text.to_f if original.is_a?(Float)
-      if original.is_a?(TrueClass) || original.is_a?(FalseClass)
-        return text.strip.downcase == "true"
-      end
-      text
     end
   end
 
@@ -1552,23 +780,7 @@ module Drecs
   class World
     include SignatureHelper 
     
-    def initialize(reuse_entity_ids: true, validate_components: nil, debug_overlay: nil,
-                   mode: :dev, deprecation_warnings: true)
-      # mode: is a high-level preset that resolves into the underlying flags.
-      #   :dev        — debug_overlay: true,  validate_components: false  (default; preserves prior behavior)
-      #   :production — debug_overlay: false, validate_components: true   (for shipping)
-      # Explicit debug_overlay:/validate_components: kwargs always win over mode:.
-      case mode
-      when :dev
-        validate_components = false if validate_components.nil?
-        debug_overlay       = true  if debug_overlay.nil?
-      when :production
-        validate_components = true  if validate_components.nil?
-        debug_overlay       = false if debug_overlay.nil?
-      else
-        raise ArgumentError, "World.new mode: must be :dev or :production (got #{mode.inspect})"
-      end
-
+    def initialize(reuse_entity_ids: true, validate_components: false, deprecation_warnings: true)
       @entity_manager = EntityManager.new(reuse_entity_ids: reuse_entity_ids)
       @systems = []
       @scheduled_systems = {}
@@ -1588,7 +800,6 @@ module Drecs
       @entity_rows = []
       @entity_count = 0
       
-      @signature_cache = {} # Cache for normalized signatures
       @query_cache = {} # Cache for matching archetypes per query signature
       @active_queries = [] # List of Query objects to refresh when archetypes change
 
@@ -1601,8 +812,6 @@ module Drecs
       @on_changed = {}
 
       @iterating = 0
-
-      @debug_overlay = debug_overlay ? DebugOverlay.new(self) : nil
 
       yield self if block_given?
     end
@@ -1624,7 +833,7 @@ module Drecs
 
     # Buffers a batch of world mutations and always defers them to the next
     # flush point. Safe to call from inside a query (the deferred commands run
-    # after iteration ends) and outside a query (they run at the next flush —
+    # after iteration ends) and outside a query (they run at the next flush â€”
     # typically the end of `World#tick`).
     #
     # If you need mutations to apply immediately outside of iteration, use
@@ -1789,16 +998,20 @@ module Drecs
       end
 
       Array.each(@systems) { _1.call(self, args) }
-      @debug_overlay&.tick(args)
 
       # Flush any commands deferred via `commands` (the always-defer form).
       # Iteration already flushes when it ends; this catches everything that
-      # was queued outside iteration, between systems, or by the debug overlay.
       flush_defer! unless @deferred.empty?
       nil
     end
 
+    alias_method :step, :tick
+
     # Creates a new entity with the given components.
+    #
+    # NOTE: a single Hash argument is interpreted as hash-keyed components
+    # ({ key => component } pairs, keys may be Classes or Symbols) â€” not as
+    # one component whose type is Hash.
     def spawn(*components)
       entity_id = @entity_manager.create_entity
 
@@ -1843,9 +1056,7 @@ module Drecs
       entity_id
     end
 
-    def create(*components)
-      spawn(*components)
-    end
+    # `create` is an alias for `spawn` (see alias_method below).
 
     def spawn_bundle(bundle, *components)
       entity_id = @entity_manager.create_entity
@@ -2052,8 +1263,51 @@ module Drecs
       old_archetype = @entity_archetypes[entity_id]
       return false unless old_archetype
 
-      # 1. Gather all current components for the entity
       row = @entity_rows[entity_id]
+      stores = old_archetype.component_stores
+      changed_at = old_archetype.component_changed_at
+
+      # Fast path: if every key being written already exists on the entity's
+      # archetype, there's no migration. Update in place without rebuilding the
+      # full component hash or recomputing the signature â€” this is the common
+      # per-frame "update an existing component" case.
+      if component_value.nil?
+        if component_key_or_component.is_a?(Hash)
+          all_present = true
+          component_key_or_component.each_key do |k|
+            unless stores.key?(k)
+              all_present = false
+              break
+            end
+          end
+          if all_present
+            keys = []
+            component_key_or_component.each do |k, v|
+              stores[k][row] = v
+              changed_at[k][row] = @change_tick
+              keys << k
+            end
+            run_changed_hooks_for_keys(keys, old_archetype, entity_id, row) unless @on_changed.empty?
+            return true
+          end
+        else
+          klass = component_key_or_component.class
+          if stores.key?(klass)
+            stores[klass][row] = component_key_or_component
+            changed_at[klass][row] = @change_tick
+            run_changed_hooks_for_keys([klass], old_archetype, entity_id, row) unless @on_changed.empty?
+            return true
+          end
+        end
+      elsif stores.key?(component_key_or_component)
+        stores[component_key_or_component][row] = component_value
+        changed_at[component_key_or_component][row] = @change_tick
+        run_changed_hooks_for_keys([component_key_or_component], old_archetype, entity_id, row) unless @on_changed.empty?
+        return true
+      end
+
+      # Slow path: at least one new component type -> archetype migration.
+      # 1. Gather all current components for the entity
       all_components = old_archetype.component_classes.to_h do |klass|
         [klass, old_archetype.component_stores[klass][row]]
       end
@@ -2088,31 +1342,12 @@ module Drecs
         end
       end
 
-      # 2. Find the new archetype based on the new signature
+      # 2. Find the new archetype based on the new signature.
+      #    (The fast path above already handled the "every key present" case,
+      #    so at least one new component type exists here and new_archetype is
+      #    always different from old_archetype.)
       new_signature = normalize_signature(all_components.keys)
       new_archetype = find_or_create_archetype(new_signature)
-
-      # If we're already in the right archetype, just update components in place
-      if old_archetype == new_archetype
-        if component_value.nil?
-          if component_key_or_component.is_a?(Hash)
-            Array.each(component_key_or_component) do |k, v|
-              new_archetype.component_stores[k][row] = v
-              new_archetype.component_changed_at[k][row] = @change_tick
-            end
-          else
-            new_archetype.component_stores[component_key_or_component.class][row] = component_key_or_component
-            new_archetype.component_changed_at[component_key_or_component.class][row] = @change_tick
-          end
-        else
-          new_archetype.component_stores[component_key_or_component][row] = component_value
-          new_archetype.component_changed_at[component_key_or_component][row] = @change_tick
-        end
-
-        run_changed_hooks_for_keys(changed_keys, new_archetype, entity_id, row) unless changed_keys.empty?
-
-        return true
-      end
 
       # 3. Add entity data to the new archetype
       new_row = new_archetype.add(entity_id, all_components, all_changed, touched, @change_tick)
@@ -2198,10 +1433,18 @@ module Drecs
       stores = archetype.component_stores
       components = []
 
-      Array.each(component_classes) do |klass|
-        store = stores[klass]
+      # Plain while loop, NOT Array.each: DragonRuby's class-level
+      # `Array.each` runs the block in a context where a non-local `return`
+      # does not return from the enclosing method, so `return nil` inside it
+      # silently kept iterating and get_many returned a partial array
+      # instead of nil when a component was missing.
+      i = 0
+      len = component_classes.length
+      while i < len
+        store = stores[component_classes[i]]
         return nil unless store
         components << store[row]
+        i += 1
       end
 
       components
@@ -2315,7 +1558,48 @@ module Drecs
       return false unless old_archetype
 
       row = @entity_rows[entity_id]
+      stores = old_archetype.component_stores
+      changed_at = old_archetype.component_changed_at
 
+      # Fast path: if no new component types are introduced, there's no
+      # migration â€” update in place and skip the full component-hash rebuild
+      # and signature normalization. (When migrating, every component is
+      # change-bumped; see the slow path / README note below.)
+      all_present = true
+      Array.each(components) do |c|
+        if c.is_a?(Hash)
+          c.each_key do |k|
+            unless stores.key?(k)
+              all_present = false
+              break
+            end
+          end
+        elsif !stores.key?(c.class)
+          all_present = false
+        end
+        break unless all_present
+      end
+
+      if all_present
+        changed_keys = []
+        Array.each(components) do |c|
+          if c.is_a?(Hash)
+            c.each do |k, v|
+              stores[k][row] = v
+              changed_at[k][row] = @change_tick
+              changed_keys << k
+            end
+          else
+            stores[c.class][row] = c
+            changed_at[c.class][row] = @change_tick
+            changed_keys << c.class
+          end
+        end
+        run_changed_hooks_for_keys(changed_keys, old_archetype, entity_id, row) unless @on_changed.empty?
+        return true
+      end
+
+      # Slow path: migration required.
       # 1. Gather all current components for the entity
       all_components = old_archetype.component_classes.to_h do |klass|
         [klass, old_archetype.component_stores[klass][row]]
@@ -2344,31 +1628,16 @@ module Drecs
         end
       end
 
-      # 3. Find the new archetype based on the new signature
+      # 3. Find the new archetype based on the new signature.
+      #    (The fast path above already handled the "every key present" case,
+      #    so at least one new component type exists here and new_archetype is
+      #    always different from old_archetype.)
       new_signature = normalize_signature(all_components.keys)
       new_archetype = find_or_create_archetype(new_signature)
 
-      # 4. If we're already in the right archetype, just update components in place
-      if old_archetype == new_archetype
-        Array.each(components) do |c|
-          if c.is_a?(Hash)
-            c.each do |k, v|
-              new_archetype.component_stores[k][row] = v
-              new_archetype.component_changed_at[k][row] = @change_tick
-            end
-          else
-            new_archetype.component_stores[c.class][row] = c
-            new_archetype.component_changed_at[c.class][row] = @change_tick
-          end
-        end
-
-        run_changed_hooks_for_keys(changed_keys, new_archetype, entity_id, row) unless changed_keys.empty?
-        return true
-      end
-
       # 5. Add entity data to the new archetype.
-      #    On migration, bump `changed_at` for every component on the entity —
-      #    not just the touched ones — because the archetype move itself is a
+      #    On migration, bump `changed_at` for every component on the entity â€”
+      #    not just the touched ones â€” because the archetype move itself is a
       #    visible change. (If you only want "touched" semantics, build your
       #    own archetype manually instead of going through this path.)
       #    Pass `nil` for `changed_hash` so Archetype.add uses @change_tick
@@ -2410,132 +1679,22 @@ module Drecs
       set_component(entity_id, component_class, component_value)
     end
 
-    # The query interface for systems.
-    # Yields entity_ids array first, followed by component arrays.
+    # `query` is the per-entity (AoS) view of the world. It behaves the same
+    # with or without a block:
+    #   - with a block:    yields (entity_id, *components) once per entity
+    #   - without a block: returns an Enumerator of (entity_id, *components)
+    #
+    # For the batched Structure-of-Arrays (SoA) fast path â€” where you get the
+    # entity_ids array followed by one parallel array per component â€” use
+    # `each_chunk`. (Previously `query`'s block form returned SoA arrays, which
+    # was a frequent footgun; `each_chunk` is now the single SoA entry point.)
     def query(*component_classes, with: nil, without: nil, any: nil, changed: nil, &block)
-      # If no block is given, return an enumerator that will yield single entities.
-      # This provides an ergonomic "AoS" view (e.g. query(A).first -> [id, a])
-      # while keeping the optimized "SoA" view for the block form.
-      unless block_given?
-        return each_entity(*component_classes, with: with, without: without, any: any, changed: changed)
-      end
-
-      with_components = Array(with)
-      changed_components = Array(changed)
-      required_components = (component_classes + with_components + changed_components).uniq
-
-      without_components = Array(without)
-      any_components = Array(any)
-
-      # Normalize query signature and cache it
-      query_sig = normalize_signature(required_components)
-
-      without_sig = without_components.empty? ? nil : normalize_signature(without_components)
-      any_sig = any_components.empty? ? nil : normalize_signature(any_components)
-      changed_sig = changed_components.empty? ? nil : normalize_signature(changed_components)
-      cache_key = [query_sig, without_sig, any_sig, changed_sig].freeze
-
-      # Use cached matching archetypes if available
-      matching_archetypes = @query_cache[cache_key] ||= @archetypes.values.select do |archetype|
-        stores_hash = archetype.component_stores
-        j = 0
-        lenj = query_sig.length
-        ok = true
-        while j < lenj
-          unless stores_hash.key?(query_sig[j])
-            ok = false
-            break
-          end
-          j += 1
-        end
-
-        if ok && without_sig
-          k = 0
-          lenk = without_sig.length
-          while k < lenk
-            if stores_hash.key?(without_sig[k])
-              ok = false
-              break
-            end
-            k += 1
-          end
-        end
-
-        if ok && any_sig
-          k = 0
-          lenk = any_sig.length
-          any_match = false
-          while k < lenk
-            if stores_hash.key?(any_sig[k])
-              any_match = true
-              break
-            end
-            k += 1
-          end
-          ok = false unless any_match
-        end
-        ok
-      end
-
-      # Find all archetypes that contain *at least* the required components
-      i = 0
-      len = matching_archetypes.length
-      while i < len
-        archetype = matching_archetypes[i]
-        i += 1
-        
-        # Skip empty archetypes
-        next if archetype.entity_ids.empty?
-
-        # Pre-compute component stores to avoid repeated hash lookups
-        stores = component_classes.map { |klass| archetype.component_stores[klass] }
-
-        if changed_sig
-          changed_tick = @change_tick
-          changed_arrays = changed_sig.map { |klass| archetype.component_changed_at[klass] }
-
-          ids = archetype.entity_ids
-          filtered_ids = []
-          filtered_stores = Array.new(stores.length) { [] }
-          row = 0
-          row_len = ids.length
-
-          while row < row_len
-            ok = true
-            j = 0
-            j_len = changed_arrays.length
-            while j < j_len
-              if changed_arrays[j][row] != changed_tick
-                ok = false
-                break
-              end
-              j += 1
-            end
-
-            if ok
-              filtered_ids << ids[row]
-              k = 0
-              k_len = stores.length
-              while k < k_len
-                filtered_stores[k] << stores[k][row]
-                k += 1
-              end
-            end
-
-            row += 1
-          end
-
-          yield(filtered_ids, *filtered_stores) unless filtered_ids.empty?
-        else
-          # Yield entity_ids first, then component arrays for high-speed iteration
-          yield(archetype.entity_ids, *stores)
-        end
-      end
+      each_entity(*component_classes, with: with, without: without, any: any, changed: changed, &block)
     end
 
     # Creates a persistent Query object that avoids signature setup on every call.
     # Aliases: `query_for` (kept for back-compat) and `cached_query` (the
-    # recommended name — a query whose archetype list is cached).
+    # recommended name â€” a query whose archetype list is cached).
     def query_for(*component_classes, with: nil, without: nil, any: nil, changed: nil)
       cached_query(*component_classes, with: with, without: without, any: any, changed: changed)
     end
@@ -2559,11 +1718,14 @@ module Drecs
     # Calling this method emits a warning unless `deprecation_warnings: false`
     # was passed to `World.new`.
     def concurrent_query(*component_classes, threads: nil, with: nil, without: nil, any: nil, changed: nil, &block)
-      warn "Drecs: concurrent_query is deprecated; use query (Ruby) or " \
-           "register_native_system/run_native_system for SDL3-threaded " \
-           "execution. Will be removed in a future version." if @deprecation_warnings
+      warn "Drecs: concurrent_query is deprecated; use each_chunk (SoA) / " \
+           "each_entity (per-entity) in Ruby, or register_native_system/" \
+           "run_native_system for SDL3-threaded execution. Will be removed in " \
+           "a future version." if @deprecation_warnings
       _ = threads # accepted and ignored for backwards compatibility
-      query(*component_classes, with: with, without: without, any: any, changed: changed, &block)
+      # Historically yielded SoA arrays, so forward to each_chunk to preserve
+      # that block shape for existing callers.
+      each_chunk(*component_classes, with: with, without: without, any: any, changed: changed, &block)
     end
 
     # Native systems: a registered C kernel that drecs runs across SDL3
@@ -2592,6 +1754,22 @@ module Drecs
 
       union_classes = (reads.map(&:first) + writes.map(&:first)).uniq
       raise ArgumentError, "register_native_system: needs at least one read or write component" if union_classes.empty?
+
+      # Native kernels read component fields via the C `mrb_iv_get` path, which
+      # only works for components whose fields live as @-ivars â€” i.e. classes
+      # built with `Drecs.component(...)`. Plain `Struct.new` stores its fields
+      # in an internal C array that `mrb_iv_get` can't see, so a Struct-based
+      # component would silently feed all-zeros into the kernel. Fail loudly at
+      # registration instead.
+      struct_components = union_classes.select { |k| k.is_a?(Class) && k < Struct }
+      unless struct_components.empty?
+        names = struct_components.map { |k| k.name || k.inspect }.join(', ')
+        raise ArgumentError,
+              "register_native_system(:#{name}): components #{names} are " \
+              "Struct-based, but native kernels require fields stored as " \
+              "@-ivars. Define them with Drecs.component(...) instead of " \
+              "Struct.new(...)."
+      end
 
       @native_systems ||= {}
       @native_systems[name.to_sym] = {
@@ -2678,28 +1856,27 @@ module Drecs
         count = archetype.entity_ids.length
         next if count.zero?
 
-        # Build SoA input/output arrays from Ruby Structs.
-        in_arrays = reads.map do |klass, member|
-          store = stores_hash[klass]
-          Array.new(count) { |i| store[i].send(member).to_f }
-        end
+        # Build struct arrays + member names. The C kernel runner
+        # (`run_kernel_native`) does the SoA extraction via mrb_iv_get,
+        # which is ~6x faster than the Ruby-side `store[i].send(:x)` loop
+        # and the difference between 11fps and 60fps at N=20000.
+        in_stores   = reads.map  { |klass, _member| stores_hash[klass] }
+        in_members  = reads.map  { |_klass, member| member }
+        out_stores  = writes.map { |klass, _member| stores_hash[klass] }
+        out_members = writes.map { |_klass, member| member }
 
-        out_arrays = writes.map do |klass, member|
-          store = stores_hash[klass]
-          Array.new(count) { |i| store[i].send(member).to_f }
-        end
+        ::Drecs::Parallel.run_kernel_native(
+          fn_ptr, in_stores, in_members, out_stores, out_members,
+          count, dt.to_f, threads
+        )
 
-        ::Drecs::Parallel.run_kernel(fn_ptr, in_arrays, out_arrays, count, dt.to_f, threads)
-
-        # Writeback into the actual component structs and bump change ticks.
-        writes.each_with_index do |(klass, member), out_idx|
-          store        = stores_hash[klass]
-          changed_arr  = archetype.component_changed_at[klass]
-          out_col      = out_arrays[out_idx]
-          setter       = "#{member}=".to_sym
+        # Bump change ticks for the written components (the struct iVars
+        # were already updated inside run_kernel_native, so we just
+        # notify downstream systems that the data changed).
+        writes.each do |klass, _member|
+          changed_arr = archetype.component_changed_at[klass]
           row = 0
           while row < count
-            store[row].send(setter, out_col[row])
             changed_arr[row] = change_tick
             row += 1
           end
@@ -2718,6 +1895,18 @@ module Drecs
       @archetypes
     end
 
+    # Structure-of-Arrays (SoA) iteration â€” the high-performance batched view.
+    # With a block, yields the entity_ids array followed by one parallel array
+    # per requested component, once per matching archetype chunk. Without a
+    # block, returns an Enumerator of those chunks.
+    #
+    #   world.each_chunk(Position, Velocity) do |ids, positions, velocities|
+    #     i = 0
+    #     while i < ids.length
+    #       positions[i].x += velocities[i].dx
+    #       i += 1
+    #     end
+    #   end
     def each_chunk(*component_classes, with: nil, without: nil, any: nil, changed: nil, &block)
       unless block_given?
         return Enumerator.new do |yielder|
@@ -2727,12 +1916,133 @@ module Drecs
         end
       end
 
-      query(*component_classes, with: with, without: without, any: any, changed: changed, &block)
+      with_components = Array(with)
+      changed_components = Array(changed)
+      required_components = (component_classes + with_components + changed_components).uniq
+
+      without_components = Array(without)
+      any_components = Array(any)
+
+      # Normalize query signature and cache it
+      query_sig = normalize_signature(required_components)
+
+      without_sig = without_components.empty? ? nil : normalize_signature(without_components)
+      any_sig = any_components.empty? ? nil : normalize_signature(any_components)
+      changed_sig = changed_components.empty? ? nil : normalize_signature(changed_components)
+      cache_key = [query_sig, without_sig, any_sig, changed_sig].freeze
+
+      # Use cached matching archetypes if available
+      matching_archetypes = @query_cache[cache_key] ||= @archetypes.values.select do |archetype|
+        stores_hash = archetype.component_stores
+        j = 0
+        lenj = query_sig.length
+        ok = true
+        while j < lenj
+          unless stores_hash.key?(query_sig[j])
+            ok = false
+            break
+          end
+          j += 1
+        end
+
+        if ok && without_sig
+          k = 0
+          lenk = without_sig.length
+          while k < lenk
+            if stores_hash.key?(without_sig[k])
+              ok = false
+              break
+            end
+            k += 1
+          end
+        end
+
+        if ok && any_sig
+          k = 0
+          lenk = any_sig.length
+          any_match = false
+          while k < lenk
+            if stores_hash.key?(any_sig[k])
+              any_match = true
+              break
+            end
+            k += 1
+          end
+          ok = false unless any_match
+        end
+        ok
+      end
+
+      # Find all archetypes that contain *at least* the required components.
+      # Track iteration depth so `in_iteration?` is accurate inside chunk
+      # blocks and deferred commands queued during iteration flush as soon
+      # as the outermost iteration ends (matching each_entity's behavior).
+      @iterating += 1
+      begin
+        i = 0
+        len = matching_archetypes.length
+        while i < len
+          archetype = matching_archetypes[i]
+          i += 1
+
+          # Skip empty archetypes
+          next if archetype.entity_ids.empty?
+
+          # Pre-compute component stores to avoid repeated hash lookups
+          stores = component_classes.map { |klass| archetype.component_stores[klass] }
+
+          if changed_sig
+            changed_tick = @change_tick
+            changed_arrays = changed_sig.map { |klass| archetype.component_changed_at[klass] }
+
+            ids = archetype.entity_ids
+            filtered_ids = []
+            filtered_stores = Array.new(stores.length) { [] }
+            row = 0
+            row_len = ids.length
+
+            while row < row_len
+              ok = true
+              j = 0
+              j_len = changed_arrays.length
+              while j < j_len
+                if changed_arrays[j][row] != changed_tick
+                  ok = false
+                  break
+                end
+                j += 1
+              end
+
+              if ok
+                filtered_ids << ids[row]
+                k = 0
+                k_len = stores.length
+                while k < k_len
+                  filtered_stores[k] << stores[k][row]
+                  k += 1
+                end
+              end
+
+              row += 1
+            end
+
+            yield(filtered_ids, *filtered_stores) unless filtered_ids.empty?
+          else
+            # Yield entity_ids first, then component arrays for high-speed iteration
+            yield(archetype.entity_ids, *stores)
+          end
+        end
+      ensure
+        @iterating -= 1
+      end
+
+      flush_defer! if @iterating.zero? && !@deferred.empty?
+      nil
     end
 
     def count(*component_classes, with: nil, without: nil, any: nil, changed: nil)
       total = 0
-      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+      each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
         total += entity_ids.length
       end
       total
@@ -2740,7 +2050,7 @@ module Drecs
 
     def ids(*component_classes, with: nil, without: nil, any: nil, changed: nil)
       all_ids = []
-      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+      each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
         all_ids.concat(entity_ids)
       end
       all_ids
@@ -2760,21 +2070,35 @@ module Drecs
 
       @iterating += 1
       begin
-        query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
-          i = 0
-          len = entity_ids.length
-          num_stores = stores.length
-          
-          while i < len
-            case num_stores
-            when 1 then yield(entity_ids[i], stores[0][i])
-            when 2 then yield(entity_ids[i], stores[0][i], stores[1][i])
-            when 3 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i])
-            when 4 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i], stores[3][i])
-            else
-              yield(entity_ids[i], *stores.map { |s| s[i] })
+        # Per-row iteration is delegated to C when the parallel runtime is
+        # loaded. The C path specializes the 0-4 component case so we
+        # never allocate an args array per row, and pre-fetches per-store
+        # raw pointers. Falls back to the pure-Ruby loop if the C path
+        # isn't available (e.g. tests, minimal installs).
+        use_c_iter = ::Drecs.const_defined?(:Parallel) &&
+                     ::Drecs::Parallel.respond_to?(:each_row)
+
+        if use_c_iter
+          each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+            ::Drecs::Parallel.each_row(entity_ids, stores, &block)
+          end
+        else
+          each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+            i = 0
+            len = entity_ids.length
+            num_stores = stores.length
+
+            while i < len
+              case num_stores
+              when 1 then yield(entity_ids[i], stores[0][i])
+              when 2 then yield(entity_ids[i], stores[0][i], stores[1][i])
+              when 3 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i])
+              when 4 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i], stores[3][i])
+              else
+                yield(entity_ids[i], *stores.map { |s| s[i] })
+              end
+              i += 1
             end
-            i += 1
           end
         end
       ensure
@@ -2790,7 +2114,7 @@ module Drecs
     # Returns [entity_id, component1, component2, ...] or nil if no match found.
     # If a block is given, yields the entity_id and components, returning the entity_id.
     def first_entity(*component_classes, with: nil, without: nil, any: nil, changed: nil, &block)
-      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+      each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
         next if entity_ids.empty?
 
         entity_id = entity_ids[0]
@@ -2812,13 +2136,13 @@ module Drecs
 
     # Returns the entity_id of the first entity matching the given components
     # (and any filter clauses), or `nil` if no match. Unlike `first_entity`,
-    # this returns just the id — no components. Useful for "is there one?"
+    # this returns just the id â€” no components. Useful for "is there one?"
     # checks and to feed into further operations.
     #
     # If a block is given, it's used as a predicate: the entity is yielded
     # (entity_id, *components); return `false` from the block to skip.
     def find_entity(*component_classes, with: nil, without: nil, any: nil, changed: nil, &predicate)
-      query(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+      each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
         i = 0
         len = entity_ids.length
         num_stores = stores.length
@@ -2850,7 +2174,7 @@ module Drecs
     # Removes components from a passed query
     # This is safe to use during iteration since it collects entities first.
     def remove_components_from_query(query, *components)
-      entities = query.flat_map { |*args| args.first }
+      entities = collect_entity_ids_from(query)
       Array.each(entities) do |id|
         Array.each(components) do |component|
           remove_component(id, component)
@@ -2861,7 +2185,7 @@ module Drecs
     # Destroys all entities that match a passed query.
     # This is safe to use during iteration since it collects entities first.
     def destroy_from_query(query)
-      entities = query.flat_map { |*args| args.first }
+      entities = collect_entity_ids_from(query)
       destroy(*entities) unless entities.empty?
     end
 
@@ -2880,27 +2204,37 @@ module Drecs
     end
 
     def clear!
-      @entity_archetypes.each_with_index do |arch, id|
-        destroy(id) if arch
+      # When removal hooks are registered we must fire them, so fall back to
+      # the per-entity destroy() path (which also handles relationship cleanup).
+      unless @on_removed.empty?
+        @entity_archetypes.each_with_index do |arch, id|
+          destroy(id) if arch
+        end
+        return nil
       end
+
+      # Fast path: reset the world's tables in bulk instead of paying the
+      # per-entity destroy() cost (archetype hole-filling, relationship
+      # cleanup, empty-archetype GC) for every entity.
+      i = 0
+      len = @entity_archetypes.length
+      while i < len
+        @entity_manager.destroy_entity(i) if @entity_archetypes[i]
+        i += 1
+      end
+
+      @archetypes = {}
+      @entity_archetypes = []
+      @entity_rows = []
+      @entity_count = 0
+      @query_cache = {}
+      Array.each(@active_queries) { _1.refresh! }
       nil
     end
 
     # Debug/inspection methods for understanding world state
     def entity_count
       @entity_count
-    end
-
-    def debug_overlay
-      @debug_overlay
-    end
-
-    def enable_debug_overlay!(toggle_key: :f1)
-      @debug_overlay = DebugOverlay.new(self, toggle_key: toggle_key)
-    end
-
-    def disable_debug_overlay!
-      @debug_overlay = nil
     end
 
     def all_entity_ids
@@ -2922,10 +2256,13 @@ module Drecs
       seen.keys.sort_by { |k| k.is_a?(Class) ? k.name : k.to_s }
     end
 
-    # Snapshot the entire world — entities + components + resources — into a
-    # Hash that can be passed to `restore` later. Hash-keyed components are
-    # deep-dup'd; struct components are deep-dup'd via `Marshal.load(Marshal.dump)`
-    # to avoid aliasing the live component instances.
+    # Snapshot the entire world â€” entities + components + resources â€” into a
+    # Hash that can be passed to `restore` later. Each component is copied
+    # via `deep_copy_component` (a fresh instance, with one level of nested
+    # Array/Hash field values dup'd) so the snapshot is decoupled from the
+    # live component instances. Deeply nested structures beyond one level
+    # are still aliased â€” mruby has no Marshal, so a full deep copy isn't
+    # available.
     def snapshot
       {
         entities: all_entity_ids.map do |id|
@@ -2940,9 +2277,16 @@ module Drecs
     # Restore a snapshot produced by `snapshot`. Existing world state is
     # cleared first. Events and resources are restored as-is; entities are
     # respawned with the recorded components and re-id'd sequentially
-    # starting from 0 (the original entity_ids are NOT preserved — the
-    # mapping is only useful if you also keep an external id->logical id
-    # mapping).
+    # starting from 0 (the original entity_ids are NOT preserved).
+    #
+    # Built-in `Parent`/`Children` components are remapped to the new ids,
+    # so hierarchies survive the round-trip. If your OWN components store
+    # raw entity ids, remap them yourself via the optional block, which
+    # receives the { old_id => new_id } mapping:
+    #
+    #   world.restore(snap) do |id_map|
+    #     world.each_entity(Targeting) { |_id, t| t.target = id_map[t.target] }
+    #   end
     def restore(snap)
       clear!
       # Reset freed-id pool so restore produces a deterministic,
@@ -2954,17 +2298,34 @@ module Drecs
       @resources = snap[:resources] ? snap[:resources].dup : {}
       @events    = snap[:events]    ? snap[:events].dup    : {}
 
-      Array.each(snap[:entities]) do |_id, components|
-        if components.length == 1 && components.values.first.is_a?(Hash)
-          # Hash component form — deep-copy each hash so subsequent
-          # mutations don't bleed back into the snapshot.
-          spawn(components.map_values { |k, v| v.dup rescue v })
-        else
-          # Struct component form — clone each struct instance so the
-          # snapshot stays a clean frozen view of the world-at-snap-time.
-          spawn(*components.values.map { |s| s.class.new(*s.values) })
+      id_map = {}
+      Array.each(snap[:entities]) do |old_id, components|
+        # Copy every component again on the way back in, so the restored
+        # world never aliases the snapshot (restoring twice, or mutating
+        # the restored world, must not corrupt the snapshot). The hash
+        # form handles struct-keyed, symbol-keyed, and mixed entities â€”
+        # spawn accepts a { key => component } hash directly.
+        copied = {}
+        components.each do |key, comp|
+          copied[key] = deep_copy_component(key, comp)
+        end
+        id_map[old_id] = spawn(copied)
+      end
+
+      # Remap the built-in relationship components to the new entity ids.
+      id_map.each_value do |new_id|
+        parent_comp = get_component(new_id, Parent)
+        if parent_comp && id_map.key?(parent_comp.id)
+          parent_comp.id = id_map[parent_comp.id]
+        end
+
+        children_comp = get_component(new_id, Children)
+        if children_comp && children_comp.ids
+          children_comp.ids.map! { |cid| id_map.fetch(cid, cid) }
         end
       end
+
+      yield id_map if block_given?
       self
     end
 
@@ -2984,6 +2345,16 @@ module Drecs
           if store.length != entity_count
             issues << "Archetype #{archetype_signature(archetype)}: " \
                       "store for #{klass.inspect} has length #{store.length} " \
+                      "(expected #{entity_count})"
+          end
+
+          changed = archetype.component_changed_at[klass]
+          if changed.nil?
+            issues << "Archetype #{archetype_signature(archetype)}: " \
+                      "no changed_at store for #{klass.inspect}"
+          elsif changed.length != entity_count
+            issues << "Archetype #{archetype_signature(archetype)}: " \
+                      "changed_at for #{klass.inspect} has length #{changed.length} " \
                       "(expected #{entity_count})"
           end
         end
@@ -3010,49 +2381,47 @@ module Drecs
       end
     end
 
+    # Returns a copied snapshot of an entity's components as
+    # { component_key => component }. Both struct-style (Class key) and
+    # hash-style (Symbol key) components are copied via `deep_copy_component`
+    # so the returned hash is decoupled from live world state â€” this is what
+    # makes `snapshot` safe to hold across subsequent mutations. (Copies are
+    # one level deep: nested Array/Hash field values are dup'd, anything
+    # nested deeper is still aliased.)
     def components_for(entity_id)
       archetype = @entity_archetypes[entity_id]
       return nil unless archetype
 
       row = @entity_rows[entity_id]
       archetype.component_classes.to_h do |klass|
-        # Always rebuild via klass.new to guarantee a brand-new Struct
-        # instance. .dup sometimes returns the same object in some
-        # mruby/Struct combos, which would leave the snapshot coupled
-        # to live world state.
         instance = archetype.component_stores[klass][row]
-        klass.new(*instance.values)
+        [klass, deep_copy_component(klass, instance)]
       end
     end
 
     # Returns a multi-line String describing every archetype and a sample of
-    # its entities. Useful for printing from the DragonRuby console when the
-    # in-game debug overlay isn't available.
+    # its entities. Useful for printing from the DragonRuby console for ad-hoc
+    # inspection.
     def dump
-      lines = ["Drecs::World dump — #{entity_count} entities, #{archetype_count} archetypes"]
+      lines = ["Drecs::World dump â€” #{entity_count} entities, #{archetype_count} archetypes"]
       Array.each(@archetypes.values) do |archetype|
         next if archetype.entity_ids.empty?
         sig = archetype_signature(archetype)
         lines << "  Archetype [#{sig}]: #{archetype.entity_ids.length} entities"
-        sample_ids = archetype.entity_ids.first([3, archetype.entity_ids.length].min)
-        Array.each(sample_ids) do |id|
-          comp_str = Array.each(archetype.component_classes).map { |k| "#{k}=#{archetype.component_stores[k][archetype.entity_ids.index(id)].inspect}" }.join(', ')
+        # The first N entity_ids occupy rows 0..N-1, so the row index is just
+        # the position â€” no need for an O(n) entity_ids.index lookup per cell.
+        sample_count = [3, archetype.entity_ids.length].min
+        row = 0
+        while row < sample_count
+          id = archetype.entity_ids[row]
+          comp_str = archetype.component_classes.map { |k| "#{k}=#{archetype.component_stores[k][row].inspect}" }.join(', ')
           lines << "    ##{id} { #{comp_str} }"
+          row += 1
         end
       end
       lines << "  Resources: #{@resources ? @resources.keys.length : 0}"
       lines << "  Events:    #{@events ? @events.values.map(&:length).sum : 0} buffered"
       lines.join("\n")
-    end
-
-    def components_for(entity_id)
-      archetype = @entity_archetypes[entity_id]
-      return nil unless archetype
-
-      row = @entity_rows[entity_id]
-      archetype.component_classes.to_h do |klass|
-        [klass, archetype.component_stores[klass][row]]
-      end
     end
 
     def archetype_count
@@ -3190,10 +2559,56 @@ module Drecs
 
     private
 
+    # Collect entity ids from either query shape:
+    #   - per-entity (each_entity/query Enumerator): yields (id, *components)
+    #   - SoA (Query#each / each_chunk): yields (ids_array, *stores)
+    # Implemented with an explicit each loop â€” DragonRuby's mruby
+    # Enumerator#flat_map is broken (it only yields the first element), which
+    # made remove_all/destroy_from_query silently skip all but one entity.
+    def collect_entity_ids_from(query)
+      entities = []
+      query.each do |*args|
+        first = args.first
+        if first.is_a?(Array)
+          entities.concat(first)
+        else
+          entities << first
+        end
+      end
+      entities
+    end
+
+    # Copy a single component instance for snapshot/restore. Class-keyed
+    # components are rebuilt via `key.new(*values)` to guarantee a brand-new
+    # instance (`.dup` sometimes returns the same object in some mruby/Struct
+    # combos); nested Array/Hash field values are dup'd one level deep so
+    # collections like `Children.ids` don't stay aliased to the source.
+    def deep_copy_component(key, instance)
+      if key.is_a?(Class)
+        values = instance.values
+        i = 0
+        len = values.length
+        while i < len
+          v = values[i]
+          values[i] = v.dup if v.is_a?(Array) || v.is_a?(Hash)
+          i += 1
+        end
+        key.new(*values)
+      elsif instance.is_a?(Hash)
+        copied = {}
+        instance.each do |k, v|
+          copied[k] = (v.is_a?(Array) || v.is_a?(Hash)) ? v.dup : v
+        end
+        copied
+      else
+        instance
+      end
+    end
+
     # Pretty-print a single archetype's signature as "[A, B, C]" with each
     # class/symbol rendered as `ClassName` or `:sym`.
     def archetype_signature(archetype)
-      '[' + Array.each(archetype.component_classes).map { |k|
+      '[' + archetype.component_classes.map { |k|
         k.is_a?(Class) ? k.name : k.inspect
       }.join(', ') + ']'
     end
@@ -3220,6 +2635,7 @@ module Drecs
     def remove_component_internal(entity_id, component_class, suppress_relationships)
       old_archetype = @entity_archetypes[entity_id]
       return false unless old_archetype
+      return false unless old_archetype.component_stores.key?(component_class)
 
       row = @entity_rows[entity_id]
       all_components = old_archetype.component_classes.to_h do |klass|
@@ -3229,8 +2645,6 @@ module Drecs
       all_changed = old_archetype.component_classes.to_h do |klass|
         [klass, old_archetype.component_changed_at[klass][row]]
       end
-
-      return false unless all_components.key?(component_class)
 
       removed_component = old_archetype.component_stores[component_class][row]
 
@@ -3294,6 +2708,9 @@ module Drecs
 
     def run_added_hooks_for_keys(keys, archetype, entity_id, row)
       hooks = @on_added
+      # Skip the normalize_signature allocation when no registered hook
+      # matches any of the touched keys (the common case).
+      return unless keys.any? { |k| hooks.key?(k) }
       classes = normalize_signature(keys)
       Array.each(classes) do |klass|
         list = hooks[klass]
@@ -3310,6 +2727,9 @@ module Drecs
 
     def run_changed_hooks_for_keys(keys, archetype, entity_id, row)
       hooks = @on_changed
+      # Skip the normalize_signature allocation when no registered hook
+      # matches any of the touched keys (the common case).
+      return unless keys.any? { |k| hooks.key?(k) }
       classes = normalize_signature(keys)
       Array.each(classes) do |klass|
         list = hooks[klass]

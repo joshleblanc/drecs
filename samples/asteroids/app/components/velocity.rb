@@ -1,1 +1,1 @@
-Velocity = Struct.new(:dx, :dy)
+Velocity = Drecs.component(:dx, :dy)
