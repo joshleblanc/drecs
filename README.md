@@ -16,7 +16,6 @@ Drecs is a high-performance archetype-based ECS (Entity Component System) implem
 - **Entity relationships** - `Parent` / `Children` components with helper APIs
 - **Automatic archetype cleanup** - Empty archetypes are removed to prevent memory growth
 - **Flexible component operations** - Add, remove, or batch-update components with archetype migration
-- **Native systems (SDL3-threaded)** - Real parallel execution via `register_native_system` / `run_native_system` and a C extension
 - **Debug/inspection tools** - Built-in methods to understand world state and performance, plus an in-game debug overlay
 - **Ergonomic helpers** - `Drecs.tag`, `Drecs.component`, `Drecs::Component` mixin, `find_entity`, `cached_query`, `event?`/`event_count`, `fetch_resource`, `snapshot`/`restore`, `validate!`, `dump`, and more
 
@@ -28,9 +27,7 @@ In a dragonruby project, run the following in your dragonruby console:
 GTK.download_stb_rb "https://github.com/joshleblanc/drecs/blob/master/lib/drecs.rb"
 ```
 
-This downloads the single `lib/drecs.rb` file — that's all you need. The
-native SDL3 runtime in `ext/` is **optional** and only required if you use
-`register_native_system` / `run_native_system`; drecs loads fine without it.
+This downloads the single `lib/drecs.rb` file — that's all you need.
 
 ## Usage
 
@@ -141,8 +138,8 @@ Enemy  = Drecs.tag(:enemy)
 
 `Drecs.component(*members)` returns a class whose fields are stored as plain
 `@-ivars` (getter/setter accessors plus a Struct-ish `members`/`values`/`[]`
-API). It is **not** a `Struct` — storing fields as ivars is what lets native
-kernels read them directly via `mrb_iv_get`, and it sidesteps the hot-reload
+API). It is **not** a `Struct` — storing fields as ivars is what makes the
+accessors uniform with the rest of drecs, and it sidesteps the hot-reload
 trap of `class X < Struct.new(...)` (see Pitfalls). `Drecs.tag(name)` returns a
 zero-field marker class (also **not** a `Struct`) that introspects cleanly on
 both the class and its instances (`Player.tag_name == :player`,
@@ -380,60 +377,6 @@ end
 ```
 
 If you use `world.tick(args)` to run systems, it automatically calls `advance_change_tick!` once per tick.
-
-#### Native Systems (DR7, SDL3-threaded execution)
-
-> **Note:** `concurrent_query` is **deprecated** as of this version. The
-> threading promise was theatrical under mruby (which is single-threaded), so
-> `concurrent_query` now forwards to `each_chunk` and emits a deprecation
-> warning. For real parallel execution, use **native systems** — drecs manages
-> the SDL3 thread fan-out from Ruby while your kernel runs in C on `double*`
-> buffers.
-
-> **Components used by native systems MUST be defined with `Drecs.component(...)`
-> or the `Drecs::Component` mixin, not `Struct.new(...)`.** Native kernels read fields via the C `mrb_iv_get`
-> path, which only sees fields stored as `@-ivars`. A `Struct`'s fields live in
-> an internal C array `mrb_iv_get` can't read, so a Struct-based component would
-> silently feed all-zeros into your kernel. `register_native_system` now raises
-> an `ArgumentError` if you pass a Struct-based component, to catch this early.
-
-```ruby
-Position = Drecs.component(:x, :y)   # NOT Struct.new — see note above
-Velocity = Drecs.component(:x, :y)
-
-DR.dlopen "drecs_parallel"
-DR.dlopen "my_systems"
-Drecs::Parallel.load
-
-world.register_native_system(
-  :integrate,
-  module_name: "MySystems",
-  kernel:      :integrate_motion,
-  reads:       [[Position, :x], [Position, :y], [Velocity, :x], [Velocity, :y]],
-  writes:      [[Position, :x], [Position, :y]],
-  threads:     4,
-)
-
-# Per frame:
-world.run_native_system(:integrate, dt: 1.0 / 60.0)
-```
-
-**How it works:**
-- The Ruby side extracts component data into SoA `double[]` arrays.
-- Your C kernel runs across N SDL3 worker threads on plain C memory.
-- The runtime writes results back into your component structs and bumps the
-  change tick.
-- mruby itself stays single-threaded; only the kernel body is parallel.
-
-**Requirements:**
-- DragonRuby 7 (uses SDL3 thread API)
-- Compiled `drecs_parallel` runtime (`gcc -shared -O2 ... drecs_parallel.c`)
-- Your own DragonRuby C extension with `DRECS_KERNEL(...)` macros
-
-See `samples/native_systems/` for a working example, and `ext/README.md` for
-the kernel authoring guide.
-
-#### Events
 
 #### Events
 
@@ -751,7 +694,6 @@ If you don't use named scheduled systems, `world.tick(args)` will continue to ru
 4. **Batch entity destruction** - Collect entity IDs and call `destroy(*ids)` once instead of destroying individually
 5. **Component reuse** - Modify component values in-place when possible instead of creating new component instances
 6. **Empty archetype cleanup** - The library automatically cleans up empty archetypes, preventing memory growth
-7. **For real parallelism** - Use `register_native_system` / `run_native_system` (requires a compiled C extension); see the "Native Systems" section
 
 ## Multi-File Projects
 

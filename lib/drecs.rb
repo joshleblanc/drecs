@@ -1,22 +1,4 @@
-# The native (SDL3-threaded) runtime is OPTIONAL. drecs degrades gracefully
-# when it isn't present (see World#each_entity / #run_native_system, which
-# both feature-detect `Drecs::Parallel`). Loading it must therefore never be
-# fatal â€” a `GTK.download_stb_rb` single-file install of `lib/drecs.rb` won't
-# ship `ext/drecs_parallel.rb`, and that's fine.
-begin
-  require 'ext/drecs_parallel.rb'
-rescue LoadError, StandardError
-  # Native runtime unavailable; pure-Ruby paths are used instead.
-end
-
 module Drecs
-  # Native system support is provided by ext/drecs_parallel.rb (Drecs::Parallel)
-  # plus the World#register_native_system / World#run_native_system pair below.
-  #
-  # For high-performance rendering, write a native kernel that walks the
-  # drecs struct stores and pushes to args.outputs via the standard native
-  # system flow â€” there's no separate render API by design.
-
   module SignatureHelper 
     def normalize_signature(component_classes)
       # Anonymous classes (e.g. a `Drecs.component(...)` result that hasn't
@@ -34,11 +16,10 @@ module Drecs
   # Why @-ivars and not `Struct.new(*members)`: mruby's Struct stores fields in
   # an internal C array, NOT as @-ivars. So `mrb_iv_get(obj, :x)` returns nil,
   # and `mrb_iv_set(obj, :x, v)` writes to a separate slot the Struct accessor
-  # `.x` never reads. The two stay desynced forever â€” `run_kernel_native` would
-  # silently produce all-zero positions, sizes, and colors (which is why the v2
-  # path produced a black screen). Pre-compute the @-ivar symbol for each member
-  # once so the per-call accessors don't rebuild `:"@#{m}"` on every read/write â€”
-  # that interpolation was a real cost on hot iteration paths.
+  # `.x` never reads. The two stay desynced forever. Pre-compute the @-ivar
+  # symbol for each member once so the per-call accessors don't rebuild
+  # `:"@#{m}"` on every read/write â€” that interpolation was a real cost on
+  # hot iteration paths.
   def self.define_component_accessors(klass, members)
     ivars = members.map { |m| :"@#{m}" }
     klass.class_eval do
@@ -129,194 +110,12 @@ module Drecs
   # Tags are plain classes with the standard drecs component API (`members`,
   # `values`, `[]`), NOT `Struct` subclasses: no global `Struct::Player`
   # constant is defined (so two `Drecs.tag(:player)` calls can't collide or
-  # emit redefinition warnings), instances carry zero fields, and the class
-  # is safe to reference from native systems (which reject Struct-based
-  # components).
+  # emit redefinition warnings), and instances carry zero fields.
   def self.tag(name = nil)
     klass = define_component_accessors(Class.new, [])
     klass.define_singleton_method(:tag_name) { name }
     klass.send(:define_method, :tag_name) { name }
     klass
-  end
-
-  # Builds a single, persistent renderer object that draws every entity
-  # matching a set of components straight out of drecs's archetype storage â€”
-  # no per-entity sprite object, no shadow "renderables" hash, no per-frame
-  # allocation. Push the returned object into `args.outputs.static_sprites`
-  # ONCE; its `draw_override` walks `each_chunk` every frame and emits one
-  # positional `ffi.draw_sprite_*` call per entity.
-  #
-  # This is the bridge between drecs's Structure-of-Arrays storage (where a
-  # renderable's data lives across SEPARATE components) and DragonRuby's
-  # renderer (which wants all sprite attributes for one draw call): the
-  # mapping says which component+field each sprite attribute is pulled from,
-  # and the positional FFI draw call assembles them â€” so you keep granular
-  # components (Position, Size, Color, ...) and never author a fat "Sprite".
-  #
-  #   renderer = Drecs.sprite_renderer(world,
-  #     x: [Position, :x], y: [Position, :y],
-  #     w: [Size, :w],     h: [Size, :h],
-  #     path: [Sprite, :path],
-  #     r: [Color, :r], g: [Color, :g], b: [Color, :b], a: [Color, :a],
-  #     flip_horizontally: [Facing, :flipped])
-  #   args.outputs.static_sprites << renderer   # once, ever
-  #
-  # Each mapping value is one of:
-  #   * `[ComponentClass, :field]` â€” read `component.field` per entity
-  #   * `[ComponentClass, ->(c){ ... }]` â€” computed from one component
-  #   * any other value â€” a constant applied to every entity (e.g.
-  #     `path: 'sprites/star.png'`, `angle: 0`, `flip_horizontally: false`)
-  #   * omitted â€” DragonRuby's default for that attribute (see DEFAULTS)
-  #
-  # `with:` / `without:` / `any:` are forwarded to `each_chunk` so you can
-  # gate which entities render (e.g. `with: Visible`, `without: Hidden`)
-  # without those tag components feeding any sprite attribute.
-  def self.sprite_renderer(world, mapping = {}, with: nil, without: nil, any: nil, variant: 6)
-    SpriteRenderer.new(world, mapping, with: with, without: without, any: any, variant: variant)
-  end
-
-  class SpriteRenderer
-    # Canonical attribute order, matching `ffi_draw.draw_sprite_6`'s positional
-    # argument list (a superset of draw_sprite_3/4/5). `:a` is alpha; `:r/:g/:b`
-    # are the saturation/tint channels (255 = unmodified for an image sprite,
-    # or the fill color for the built-in white `:solid` path).
-    ATTRS = [
-      :x, :y, :w, :h, :path, :angle,
-      :a, :r, :g, :b,
-      :tile_x, :tile_y, :tile_w, :tile_h,
-      :flip_horizontally, :flip_vertically,
-      :angle_anchor_x, :angle_anchor_y,
-      :source_x, :source_y, :source_w, :source_h,
-      :blendmode_enum,
-      :anchor_x, :anchor_y,
-      :scale_quality_enum
-    ].freeze
-
-    # How many leading ATTRS each draw_sprite_N variant consumes.
-    VARIANT_ARGC = { 3 => 22, 4 => 23, 5 => 25, 6 => 26 }.freeze
-
-    # Sensible defaults for attributes the caller doesn't map. `path` must be
-    # non-nil for anything to render, so it defaults to the built-in white
-    # `:solid` pixel (tint it via r/g/b for solid-color fills). Everything else
-    # left as nil falls through to DragonRuby's own per-attribute default.
-    DEFAULTS = {
-      path: :solid,
-      angle: 0,
-      a: 255, r: 255, g: 255, b: 255,
-      flip_horizontally: false, flip_vertically: false
-    }.freeze
-
-    attr_reader :components
-
-    def initialize(world, mapping, with: nil, without: nil, any: nil, variant: 6)
-      @world = world
-      @without = without
-      @any = any
-
-      argc = VARIANT_ARGC[variant]
-      raise ArgumentError, "variant must be one of #{VARIANT_ARGC.keys.inspect}" unless argc
-      @draw_method = "draw_sprite_#{variant}".to_sym
-      @argc = argc
-
-      # Discover the components referenced by accessor mappings, in first-seen
-      # order â€” this is the iteration signature handed to each_chunk.
-      comps = []
-      ATTRS.each do |attr|
-        v = mapping[attr]
-        next unless accessor?(v)
-        comps << v[0] unless comps.include?(v[0])
-      end
-
-      # `with:` components participate in entity selection but feed no attribute.
-      # They're appended AFTER the accessor components so accessor store indices
-      # (computed against `comps`) stay valid in the each_chunk yield order.
-      with_only = Array(with).reject { |k| comps.include?(k) }
-      @components = comps
-      @iter_components = comps + with_only
-
-      if @iter_components.empty?
-        raise ArgumentError, "sprite_renderer needs at least one [Component, :field] mapping or a `with:` component to know which entities to draw"
-      end
-
-      # Precompute, per ATTR slot (only up to @argc), how to resolve its value:
-      #   @is_accessor[slot]  -> true if read from a component
-      #   @store_idx[slot]    -> which each_chunk store array to read
-      #   @getter[slot]       -> Symbol (sent to component) or Proc (called with it)
-      #   @is_proc[slot]      -> getter is a Proc
-      #   @const[slot]        -> constant/default value when not an accessor
-      @is_accessor = Array.new(@argc, false)
-      @store_idx   = Array.new(@argc)
-      @getter      = Array.new(@argc)
-      @is_proc     = Array.new(@argc, false)
-      @const       = Array.new(@argc)
-
-      slot = 0
-      while slot < @argc
-        attr = ATTRS[slot]
-        if mapping.key?(attr) && accessor?(mapping[attr])
-          v = mapping[attr]
-          @is_accessor[slot] = true
-          @store_idx[slot]   = comps.index(v[0])
-          getter             = v[1]
-          @is_proc[slot]     = !getter.is_a?(Symbol) && getter.respond_to?(:call)
-          @getter[slot]      = getter
-        elsif mapping.key?(attr)
-          @const[slot] = mapping[attr]
-        else
-          @const[slot] = DEFAULTS[attr]
-        end
-        slot += 1
-      end
-
-      # Reused argument buffer â€” refilled per entity, never reallocated.
-      @args = Array.new(@argc)
-    end
-
-    # Returns true for an accessor mapping of the form [ComponentClass, :field]
-    # or [ComponentClass, proc]. Sprite attribute constants are always scalars
-    # (numbers / symbols / strings / booleans), so a 2-element [Class, Symbol|callable]
-    # array is unambiguously an accessor.
-    def accessor?(v)
-      v.is_a?(Array) && v.length == 2 && v[0].is_a?(Class) &&
-        (v[1].is_a?(Symbol) || v[1].respond_to?(:call))
-    end
-
-    # Invoked by DragonRuby for each object in outputs that responds to it.
-    # Walks the matching archetype chunks and emits one positional sprite draw
-    # per entity, pulling each attribute from its mapped component.
-    def draw_override(ffi)
-      args        = @args
-      argc        = @argc
-      is_accessor = @is_accessor
-      store_idx   = @store_idx
-      getter      = @getter
-      is_proc     = @is_proc
-      const       = @const
-      draw_method = @draw_method
-
-      @world.each_chunk(*@iter_components, with: nil, without: @without, any: @any) do |ids, *stores|
-        row = 0
-        n = ids.length
-        while row < n
-          slot = 0
-          while slot < argc
-            if is_accessor[slot]
-              comp = stores[store_idx[slot]][row]
-              if is_proc[slot]
-                args[slot] = getter[slot].call(comp)
-              else
-                args[slot] = comp.send(getter[slot])
-              end
-            else
-              args[slot] = const[slot]
-            end
-            slot += 1
-          end
-          ffi.send(draw_method, *args)
-          row += 1
-        end
-      end
-    end
   end
 
   Name = Struct.new(:value)
@@ -1708,189 +1507,6 @@ module Drecs
       q
     end
 
-    # Backward-compatibility shim: prior versions of drecs exposed
-    # `concurrent_query` as a (sequential) alternative to `query`. The
-    # threading promise was theatrical because mruby is single-threaded.
-    # Now it simply forwards to query; use register_native_system /
-    # run_native_system for actual SDL3-threaded execution.
-    #
-    # DEPRECATED: kept as an alias for one minor version, then plan removal.
-    # Calling this method emits a warning unless `deprecation_warnings: false`
-    # was passed to `World.new`.
-    def concurrent_query(*component_classes, threads: nil, with: nil, without: nil, any: nil, changed: nil, &block)
-      warn "Drecs: concurrent_query is deprecated; use each_chunk (SoA) / " \
-           "each_entity (per-entity) in Ruby, or register_native_system/" \
-           "run_native_system for SDL3-threaded execution. Will be removed in " \
-           "a future version." if @deprecation_warnings
-      _ = threads # accepted and ignored for backwards compatibility
-      # Historically yielded SoA arrays, so forward to each_chunk to preserve
-      # that block shape for existing callers.
-      each_chunk(*component_classes, with: with, without: without, any: any, changed: changed, &block)
-    end
-
-    # Native systems: a registered C kernel that drecs runs across SDL3
-    # threads. The kernel is authored in a separate DragonRuby C extension
-    # using ext/drecs_kernel.h.
-    #
-    # @example
-    #   world.register_native_system(
-    #     :integrate,
-    #     module_name: "MySystems",
-    #     kernel:      :integrate_motion,
-    #     reads:       [[Position, :x], [Position, :y], [Velocity, :x], [Velocity, :y]],
-    #     writes:      [[Position, :x], [Position, :y]],
-    #     threads:     4,
-    #   )
-    #   world.run_native_system(:integrate, dt: 1.0/60.0)
-    def register_native_system(name,
-                                module_name:,
-                                kernel:,
-                                reads: [],
-                                writes: [],
-                                with: nil, without: nil, any: nil,
-                                threads: 4)
-      reads  = reads.map { |pair| [pair[0], pair[1].to_sym] }
-      writes = writes.map { |pair| [pair[0], pair[1].to_sym] }
-
-      union_classes = (reads.map(&:first) + writes.map(&:first)).uniq
-      raise ArgumentError, "register_native_system: needs at least one read or write component" if union_classes.empty?
-
-      # Native kernels read component fields via the C `mrb_iv_get` path, which
-      # only works for components whose fields live as @-ivars â€” i.e. classes
-      # built with `Drecs.component(...)`. Plain `Struct.new` stores its fields
-      # in an internal C array that `mrb_iv_get` can't see, so a Struct-based
-      # component would silently feed all-zeros into the kernel. Fail loudly at
-      # registration instead.
-      struct_components = union_classes.select { |k| k.is_a?(Class) && k < Struct }
-      unless struct_components.empty?
-        names = struct_components.map { |k| k.name || k.inspect }.join(', ')
-        raise ArgumentError,
-              "register_native_system(:#{name}): components #{names} are " \
-              "Struct-based, but native kernels require fields stored as " \
-              "@-ivars. Define them with Drecs.component(...) instead of " \
-              "Struct.new(...)."
-      end
-
-      @native_systems ||= {}
-      @native_systems[name.to_sym] = {
-        module_name: module_name.to_s,
-        kernel:      kernel.to_sym,
-        reads:       reads,
-        writes:      writes,
-        union:       normalize_signature(union_classes),
-        with:        with ? normalize_signature(Array(with)) : nil,
-        without:     without ? normalize_signature(Array(without)) : nil,
-        any:         any ? normalize_signature(Array(any)) : nil,
-        threads:     threads,
-        kernel_ptr:  nil, # resolved lazily on first run
-      }
-      name.to_sym
-    end
-
-    def run_native_system(name, dt: 0.0)
-      sys = (@native_systems ||= {})[name.to_sym]
-      raise ArgumentError, "run_native_system(:#{name}) not registered" unless sys
-
-      unless ::Drecs.const_defined?(:Parallel) && ::Drecs::Parallel.respond_to?(:run_kernel)
-        raise RuntimeError,
-              "run_native_system(:#{name}): drecs_parallel runtime not loaded. " \
-              "Call DR.dlopen 'drecs_parallel'; Drecs::Parallel.load before run."
-      end
-
-      sys[:kernel_ptr] ||= ::Drecs::Parallel.kernel_ptr(sys[:module_name], sys[:kernel])
-      fn_ptr = sys[:kernel_ptr]
-
-      union_sig   = sys[:union]
-      with_sig    = sys[:with]
-      without_sig = sys[:without]
-      any_sig     = sys[:any]
-      threads     = sys[:threads]
-      reads       = sys[:reads]
-      writes      = sys[:writes]
-      change_tick = @change_tick
-
-      @archetypes.each_value do |archetype|
-        stores_hash = archetype.component_stores
-
-        # union (reads+writes) all required
-        ok = true
-        union_sig.each do |klass|
-          unless stores_hash.key?(klass)
-            ok = false
-            break
-          end
-        end
-        next unless ok
-
-        if with_sig
-          with_sig.each do |klass|
-            unless stores_hash.key?(klass)
-              ok = false
-              break
-            end
-          end
-          next unless ok
-        end
-
-        if without_sig
-          without_sig.each do |klass|
-            if stores_hash.key?(klass)
-              ok = false
-              break
-            end
-          end
-          next unless ok
-        end
-
-        if any_sig
-          any_match = false
-          any_sig.each do |klass|
-            if stores_hash.key?(klass)
-              any_match = true
-              break
-            end
-          end
-          next unless any_match
-        end
-
-        count = archetype.entity_ids.length
-        next if count.zero?
-
-        # Build struct arrays + member names. The C kernel runner
-        # (`run_kernel_native`) does the SoA extraction via mrb_iv_get,
-        # which is ~6x faster than the Ruby-side `store[i].send(:x)` loop
-        # and the difference between 11fps and 60fps at N=20000.
-        in_stores   = reads.map  { |klass, _member| stores_hash[klass] }
-        in_members  = reads.map  { |_klass, member| member }
-        out_stores  = writes.map { |klass, _member| stores_hash[klass] }
-        out_members = writes.map { |_klass, member| member }
-
-        ::Drecs::Parallel.run_kernel_native(
-          fn_ptr, in_stores, in_members, out_stores, out_members,
-          count, dt.to_f, threads
-        )
-
-        # Bump change ticks for the written components (the struct iVars
-        # were already updated inside run_kernel_native, so we just
-        # notify downstream systems that the data changed).
-        writes.each do |klass, _member|
-          changed_arr = archetype.component_changed_at[klass]
-          row = 0
-          while row < count
-            changed_arr[row] = change_tick
-            row += 1
-          end
-        end
-      end
-
-      name.to_sym
-    end
-
-    # @return [Hash] registered native systems by name
-    def native_systems
-      @native_systems ||= {}
-    end
-
     def archetypes
       @archetypes
     end
@@ -2070,35 +1686,21 @@ module Drecs
 
       @iterating += 1
       begin
-        # Per-row iteration is delegated to C when the parallel runtime is
-        # loaded. The C path specializes the 0-4 component case so we
-        # never allocate an args array per row, and pre-fetches per-store
-        # raw pointers. Falls back to the pure-Ruby loop if the C path
-        # isn't available (e.g. tests, minimal installs).
-        use_c_iter = ::Drecs.const_defined?(:Parallel) &&
-                     ::Drecs::Parallel.respond_to?(:each_row)
+        each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
+          i = 0
+          len = entity_ids.length
+          num_stores = stores.length
 
-        if use_c_iter
-          each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
-            ::Drecs::Parallel.each_row(entity_ids, stores, &block)
-          end
-        else
-          each_chunk(*component_classes, with: with, without: without, any: any, changed: changed) do |entity_ids, *stores|
-            i = 0
-            len = entity_ids.length
-            num_stores = stores.length
-
-            while i < len
-              case num_stores
-              when 1 then yield(entity_ids[i], stores[0][i])
-              when 2 then yield(entity_ids[i], stores[0][i], stores[1][i])
-              when 3 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i])
-              when 4 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i], stores[3][i])
-              else
-                yield(entity_ids[i], *stores.map { |s| s[i] })
-              end
-              i += 1
+          while i < len
+            case num_stores
+            when 1 then yield(entity_ids[i], stores[0][i])
+            when 2 then yield(entity_ids[i], stores[0][i], stores[1][i])
+            when 3 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i])
+            when 4 then yield(entity_ids[i], stores[0][i], stores[1][i], stores[2][i], stores[3][i])
+            else
+              yield(entity_ids[i], *stores.map { |s| s[i] })
             end
+            i += 1
           end
         end
       ensure

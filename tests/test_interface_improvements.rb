@@ -100,36 +100,6 @@ def test_commands_bang_applies_immediately(args, assert)
 end
 
 # ---------------------------------------------------------------------------
-# concurrent_query deprecation
-# ---------------------------------------------------------------------------
-
-def test_concurrent_query_emits_deprecation_warning(args, assert)
-  w = Drecs::World.new
-  captured = $stderr
-  buf = StringIO.new
-  begin
-    $stderr = buf
-    w.concurrent_query
-  ensure
-    $stderr = captured
-  end
-  assert.true! buf.string.include?("deprecated"), "Expected deprecation warning, got: #{buf.string.inspect}"
-end
-
-def test_concurrent_query_warning_can_be_disabled(args, assert)
-  w = Drecs::World.new(deprecation_warnings: false)
-  captured = $stderr
-  buf = StringIO.new
-  begin
-    $stderr = buf
-    w.concurrent_query
-  ensure
-    $stderr = captured
-  end
-  assert.equal! buf.string.include?("deprecated"), false
-end
-
-# ---------------------------------------------------------------------------
 # Event helpers
 # ---------------------------------------------------------------------------
 
